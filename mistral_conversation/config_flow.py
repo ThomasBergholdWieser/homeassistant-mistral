@@ -20,6 +20,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
+from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -60,7 +61,7 @@ RECOMMENDED_OPTIONS = {
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Validate the user input allows us to connect to Mistral."""
-    client = MistralClient(data[CONF_API_KEY])
+    client = MistralClient(data[CONF_API_KEY], get_async_client(hass))
     # Mistral does not have a models endpoint, so we do a dummy chat call
     payload = {
         "model": RECOMMENDED_CHAT_MODEL,

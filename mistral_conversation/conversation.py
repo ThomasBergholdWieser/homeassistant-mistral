@@ -1,35 +1,28 @@
 # Modified by Louis Rokitta
-from collections.abc import AsyncGenerator, Callable
-import json
-from typing import Any, Literal, cast
 
-from homeassistant.components import assist_pipeline, conversation
+from typing import Literal
+
+from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr, intent, llm
+from homeassistant.helpers import device_registry as dr, intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import MistralClient
 from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
-    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
-    LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     DEFAULT_SYSTEM_PROMPT,
 )
-
-MAX_TOOL_ITERATIONS = 3
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -84,9 +77,6 @@ class MistralConversationEntity(
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        assist_pipeline.async_migrate_engine(
-            self.hass, "conversation", self.entry.entry_id, self.entity_id
-        )
         conversation.async_set_agent(self.hass, self.entry, self)
         self.entry.async_on_unload(
             self.entry.add_update_listener(self._async_entry_update_listener)
