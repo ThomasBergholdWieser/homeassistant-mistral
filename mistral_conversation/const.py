@@ -1,10 +1,16 @@
 # Modified by Louis Rokitta
 """Constants for the Mistral AI Conversation integration."""
 
+from homeassistant.const import CONF_LLM_HASS_API
+from homeassistant.helpers import llm
 import logging
 
 DOMAIN = "mistral_ai_api"
 LOGGER: logging.Logger = logging.getLogger(__package__)
+
+DEFAULT_CONVERSATION_NAME = "Mistral Conversation"
+DEFAULT_AI_TASK_NAME = "Mistral AI Task"
+DEFAULT_NAME = "Mistral Conversation"
 
 CONF_CHAT_MODEL = "chat_model"
 CONF_FILENAMES = "filenames"
@@ -15,31 +21,24 @@ CONF_RECOMMENDED = "recommended"
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 
-RECOMMENDED_CHAT_MODEL = "mistral-medium"
-RECOMMENDED_MAX_TOKENS = 150
-RECOMMENDED_REASONING_EFFORT = "low"
-RECOMMENDED_TEMPERATURE = 1.0
-RECOMMENDED_TOP_P = 1.0
+RECOMMENDED_CHAT_MODEL = "mistral-large-latest"
+RECOMMENDED_MAX_TOKENS = 512
+RECOMMENDED_REASONING_EFFORT = "medium"
+RECOMMENDED_TEMPERATURE = 0.7
+RECOMMENDED_TOP_P = 0.9
 DEFAULT_SYSTEM_PROMPT = (
     "You are a Home Assistant smart home AI. Only respond with Home Assistant compatible commands."
 )
+MAX_TOOL_ITERATIONS = 10
 
-# Mistral unterstützt keine Websuche, daher deaktiviert
-CONF_WEB_SEARCH = "web_search"
-CONF_WEB_SEARCH_USER_LOCATION = "user_location"
-CONF_WEB_SEARCH_CONTEXT_SIZE = "search_context_size"
-CONF_WEB_SEARCH_CITY = "city"
-CONF_WEB_SEARCH_REGION = "region"
-CONF_WEB_SEARCH_COUNTRY = "country"
-CONF_WEB_SEARCH_TIMEZONE = "timezone"
-RECOMMENDED_WEB_SEARCH = False
-RECOMMENDED_WEB_SEARCH_CONTEXT_SIZE = "medium"
-RECOMMENDED_WEB_SEARCH_USER_LOCATION = False
+UNSUPPORTED_MODELS: list[str] = []
+WEB_SEARCH_MODELS: list[str] = []
 
-UNSUPPORTED_MODELS: list[str] = [
-    # Hier ggf. Mistral-spezifische Modelle ergänzen, falls welche nicht unterstützt werden
-]
-
-WEB_SEARCH_MODELS: list[str] = [
-    # Mistral unterstützt keine Websuche, daher leer lassen
-]
+RECOMMENDED_CONVERSATION_OPTIONS = {
+    CONF_RECOMMENDED: True,
+    CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+    CONF_PROMPT: llm.DEFAULT_INSTRUCTIONS_PROMPT,
+}
+RECOMMENDED_AI_TASK_OPTIONS = {
+    CONF_RECOMMENDED: True,
+}

@@ -1,67 +1,87 @@
 {
-  "domain": "mistral_ai_api",
   "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
     "step": {
       "user": {
         "data": {
           "api_key": "[%key:common::config_flow::data::api_key%]"
         }
       }
-    },
-    "error": {
-      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
-      "unknown": "[%key:common::config_flow::error::unknown%]"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "data": {
-          "prompt": "Instructions",
-          "chat_model": "[%key:common::generic::model%]",
-          "max_tokens": "Maximum tokens to return in response",
-          "temperature": "Temperature",
-          "top_p": "Top P",
-          "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]",
-          "recommended": "Recommended model settings",
-          "reasoning_effort": "Reasoning effort"
+  "config_subentries": {
+    "ai_task_data": {
+      "abort": {
+        "entry_not_loaded": "Cannot change this entry while it is disabled.",
+        "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+      },
+      "entry_type": "AI task",
+      "error": {
+        "model_not_supported": "This model is not supported, please select a different model"
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure AI task",
+        "user": "Add AI task"
+      },
+      "step": {
+        "advanced": {
+          "data": {
+            "chat_model": "[%key:common::generic::model%]",
+            "max_tokens": "Maximum tokens to return in response",
+            "temperature": "Temperature",
+            "top_p": "Top P",
+            "reasoning_effort": "Reasoning effort"
+          },
+          "title": "Advanced settings"
         },
-        "data_description": {
-          "prompt": "Instruct how the LLM should respond. This can be a template.",
-          "reasoning_effort": "How many reasoning tokens the model should generate before creating a response to the prompt (for certain reasoning models)"
+        "init": {
+          "data": {
+            "name": "[%key:common::config_flow::data::name%]",
+            "recommended": "Recommended model settings"
+          }
         }
       }
     },
-    "error": {
-      "model_not_supported": "This model is not supported, please select a different model"
-    }
-  },
-  "selector": {
-    "reasoning_effort": {
-      "options": {
-        "low": "[%key:common::state::low%]",
-        "medium": "[%key:common::state::medium%]",
-        "high": "[%key:common::state::high%]"
-      }
-    }
-  },
-  "services": {
-    "generate_content": {
-      "name": "Generate content",
-      "description": "Sends a conversational query to Mistral AI including any attached files (text or PDF only)",
-      "fields": {
-        "config_entry": {
-          "name": "Config entry",
-          "description": "The config entry to use for this action"
+    "conversation": {
+      "abort": {
+        "entry_not_loaded": "Cannot add items while the configuration is disabled.",
+        "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+      },
+      "entry_type": "Conversation agent",
+      "error": {
+        "model_not_supported": "This model is not supported, please select a different model"
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure conversation agent",
+        "user": "Add conversation agent"
+      },
+      "step": {
+        "advanced": {
+          "data": {
+            "chat_model": "[%key:common::generic::model%]",
+            "max_tokens": "Maximum tokens to return in response",
+            "temperature": "Temperature",
+            "top_p": "Top P"
+          },
+          "title": "Advanced settings"
         },
-        "prompt": {
-          "name": "Prompt",
-          "description": "The prompt to send"
-        },
-        "filenames": {
-          "name": "Files",
-          "description": "List of files to upload (text or PDF only)"
+        "init": {
+          "data": {
+            "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]",
+            "name": "[%key:common::config_flow::data::name%]",
+            "prompt": "[%key:common::config_flow::data::prompt%]",
+            "recommended": "Recommended model settings"
+          },
+          "data_description": {
+            "prompt": "Instruct how the LLM should respond. This can be a template."
+          }
         }
       }
     }
@@ -69,6 +89,26 @@
   "exceptions": {
     "invalid_config_entry": {
       "message": "Invalid config entry provided. Got {config_entry}"
+    }
+  },
+  "services": {
+    "generate_content": {
+      "description": "Send a prompt to Mistral and return the textual response.",
+      "fields": {
+        "config_entry": {
+          "description": "The config entry to use for this action",
+          "name": "Config entry"
+        },
+        "filenames": {
+          "description": "List of files to upload",
+          "name": "Files"
+        },
+        "prompt": {
+          "description": "The prompt to send",
+          "name": "Prompt"
+        }
+      },
+      "name": "Generate content"
     }
   }
 }

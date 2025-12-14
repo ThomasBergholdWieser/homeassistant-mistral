@@ -11,16 +11,17 @@ Mit dieser Custom Component kannst du Mistral AI direkt in Home Assistant nutzen
 ### Was kann die Integration?
 
 - Nutzt die [Mistral Chat API](https://docs.mistral.ai/api/) für Antworten und Steuerbefehle
-- Funktioniert mit Home Assistant Conversation (also Sprachsteuerung, Chat, Automationen)
-- Du kannst das Mistral-Modell direkt in der UI auswählen (z.B. `mistral-medium`, `mistral-large`)
+- Funktioniert mit dem Home Assistant Conversation-Agent (Sprachsteuerung, Chat, Automationen)
+- Unterstützt AI Tasks (strukturierte Ausgabe/JSON, Automationen, Datenverarbeitung)
+- Auswahl des Mistral-Modells direkt über die Optionsoberfläche (nach Deaktivieren der empfohlenen Einstellungen)
+- Tool-Calls und Home-Assistant-LLM-APIs werden an Mistral durchgeschleift, sodass z. B. `GetLiveContext` oder Intent-Tools funktionieren
 - System-Prompt sorgt dafür, dass die KI sich auf Smart-Home-Kommandos konzentriert
-- Konversationen werden gespeichert (wenn du willst)
-- Keine Bildgenerierung
+- Keine Bildgenerierung (Mistral stellt keine Image-API bereit)
 
 ### Was brauchst du?
 
 - Home Assistant (ab Version 2024.5 getestet)
-- Einen Mistral API Key ([hier bekommst du einen](https://console.mistral.ai/))
+- Einen Mistral API Key ([hier bekommst du einen](https://console.mistral.ai/command-center/api-keys))
 
 ### Installation
 
@@ -31,15 +32,15 @@ Mit dieser Custom Component kannst du Mistral AI direkt in Home Assistant nutzen
 
 ### Einrichtung
 
-- Füge die Integration über die Home Assistant UI hinzu ("Integration hinzufügen" > "Mistral AI Conversation")
-- Gib deinen API Key ein
-- Wähle das Modell und weitere Optionen in den Einstellungen der Integration
+1. Füge die Integration über die Home Assistant UI hinzu ("Integration hinzufügen" > "Mistral AI Conversation").
+2. Gib deinen API Key ein. Die Integration legt automatisch einen Conversation-Agent und eine AI-Task-Konfiguration an.
+3. Unter "Optionen" / "Konfigurieren" kannst du:
+   - die empfohlenen Einstellungen nutzen (schnellster Weg),
+   - oder den Haken entfernen, um Modell, `max_tokens`, `temperature`, `top_p`, `reasoning_effort` usw. manuell zu setzen.
 
-#### Modellwahl in der UI
+#### Beispiele
 
-Im Optionsmenü kannst du das gewünschte Mistral-Modell auswählen (z.B. `mistral-medium`, `mistral-large`).
-
-#### Beispiel: Automation mit Live-Daten
+**Automation mit Live-Daten**
 
 ```yaml
 - alias: "Frage Mistral nach Temperatur"
@@ -49,9 +50,28 @@ Im Optionsmenü kannst du das gewünschte Mistral-Modell auswählen (z.B. `mistr
   action:
     - service: conversation.process
       data:
-        agent_id: "conversation.mistral_ai_api"
+        agent_id: "conversation.mistral_ai"
         text: >
           Die aktuelle Temperatur im Wohnzimmer beträgt {{ states('sensor.wohnzimmer_temperature') }} °C. Was soll ich tun?
+```
+
+**AI Task (Datenaufbereitung)**
+
+```yaml
+- alias: "Generiere Ideen für Automationen"
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: sensor.wohnzimmer_temperature
+  action:
+    - service: ai_task.generate_data
+      target:
+        entity_id: ai_task.mistral_ai_task
+      data:
+        task_id: "wohnzimmer_automation"
+        prompt: >
+          Temperatur: {{ states('sensor.wohnzimmer_temperature') }} °C.
+          Erstelle eine Liste mit möglichen Automationen.
 ```
 
 ### Noch wichtig
@@ -129,9 +149,9 @@ You can select your preferred Mistral model (e.g. `mistral-medium`, `mistral-lar
 ### Good to know
 
 - The integration is stable, but feedback is always welcome!
-- Image generation is not possible.
-- Function calling, tool calls, and web search are unfortunately not possible yet.
-- **Technical note:** This component is based on the official OpenAI Conversation integration, but fully rebuilt for Mistral.
+- Image generation is currently not supported (Mistral offers no image API).
+- Tool calls, HA intent tools and AI tasks are supported (similar to the OpenAI integration).
+- **Technical note:** This component mirrors the official OpenAI Conversation integration but calls the Mistral chat API instead.
 
 ### License
 

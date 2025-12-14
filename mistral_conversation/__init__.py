@@ -1,140 +1,108 @@
-"""The Mistral AI Conversation integration."""
-
 # Modified by Louis Rokitta
+"""Set up the Mistral AI integration."""
 
 from __future__ import annotations
-import base64
-from mimetypes import guess_type
+
 from pathlib import Path
-from .mistral_client import MistralClient
+from types import MappingProxyType
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
-from homeassistant.core import (
-    HomeAssistant,
-    ServiceCall,
-    ServiceResponse,
-    SupportsResponse,
-)
-from homeassistant.exceptions import (
-    ConfigEntryNotReady,
-    HomeAssistantError,
-    ServiceValidationError,
-)
-from homeassistant.helpers import config_validation as cv, selector
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv, device_registry as dr, entity_registry as er, selector
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    CONF_CHAT_MODEL,
     CONF_FILENAMES,
-    CONF_MAX_TOKENS,
     CONF_PROMPT,
-    CONF_REASONING_EFFORT,
-    CONF_TEMPERATURE,
-    CONF_TOP_P,
+    DEFAULT_AI_TASK_NAME,
+    DEFAULT_NAME,
     DOMAIN,
     LOGGER,
-    RECOMMENDED_CHAT_MODEL,
-    RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
-    RECOMMENDED_TEMPERATURE,
-    RECOMMENDED_TOP_P,
-    DEFAULT_SYSTEM_PROMPT,
+    RECOMMENDED_AI_TASK_OPTIONS,
+    RECOMMENDED_CONVERSATION_OPTIONS,
 )
+from .entity import MistralBaseLLMEntity, _build_messages
+from .mistral_client import MistralClient
 
-SERVICE_GENERATE_IMAGE = "generate_image"
-SERVICE_GENERATE_CONTENT = "generate_content"
+PLATFORMS = (Platform.CONVERSATION, Platform.AI_TASK)
 
-PLATFORMS = (Platform.CONVERSATION,)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-def encode_file(file_path: str) -> tuple[str, str]:
-    """Return base64 version of file contents."""
-    mime_type, _ = guess_type(file_path)
-    if (mime_type is None):
-        mime_type = "application/octet-stream"
-    with open(file_path, "rb") as image_file:
-        return (mime_type, base64.b64encode(image_file.read()).decode("utf-8"))
-
-
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up Mistral AI Conversation."""
-
-    async def render_image(call: ServiceCall) -> ServiceResponse:
-        """Render an image with Mistral (not supported, placeholder)."""
-        raise HomeAssistantError("Mistral API does not support image generation.")
+    """Set up the Mistral services."""
 
     async def send_prompt(call: ServiceCall) -> ServiceResponse:
-        """Send a prompt to Mistral and return the response."""
         entry_id = call.data["config_entry"]
         entry = hass.config_entries.async_get_entry(entry_id)
-
-        if (entry is None or entry.domain != DOMAIN):
+        if entry is None or entry.domain != DOMAIN:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="invalid_config_entry",
                 translation_placeholders={"config_entry": entry_id},
             )
 
-        model: str = entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
-        api_key: str = entry.data.get(CONF_API_KEY)
-        client = MistralClient(api_key, get_async_client(hass))
+        conversation_subentry = next(
+            (
+                sub
+                for sub in entry.subentries.values()
+                if sub.subentry_type == "conversation"
+            ),
+            None,
+        )
+        if not conversation_subentry:
+            raise ServiceValidationError("No conversation configuration found")
 
-        user_prompt = call.data[CONF_PROMPT]
-        system_prompt = entry.options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)
+        client: MistralClient = entry.runtime_data
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "system", "content": conversation_subentry.data.get(CONF_PROMPT)},
+            {"role": "user", "content": call.data[CONF_PROMPT]},
         ]
-        payload = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": entry.options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
-            "temperature": entry.options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
-            "top_p": entry.options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-            "stream": False,
-        }
-        try:
-            response = await client.chat(payload)
-        except Exception as err:
-            raise HomeAssistantError(f"Error generating content: {err}") from err
-        if not response or "choices" not in response or not response["choices"]:
-            raise HomeAssistantError("No response from Mistral API")
+
+        if filenames := call.data.get(CONF_FILENAMES):
+            for filename in filenames:
+                if not hass.config.is_allowed_path(filename):
+                    raise HomeAssistantError(
+                        f"Cannot read `{filename}`; adjust allowlist_external_dirs"
+                    )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": Path(filename).read_text(),
+                    }
+                )
+
+        response = await client.chat(
+            {
+                "model": conversation_subentry.data.get(
+                    "chat_model", "mistral-large-latest"
+                ),
+                "messages": messages,
+                "stream": False,
+            }
+        )
         return {"text": response["choices"][0]["message"]["content"]}
 
     hass.services.async_register(
         DOMAIN,
-        SERVICE_GENERATE_CONTENT,
+        "generate_content",
         send_prompt,
         schema=vol.Schema(
             {
                 vol.Required("config_entry"): selector.ConfigEntrySelector(
-                    {"integration": DOMAIN}
+                    {
+                        "integration": DOMAIN,
+                    }
                 ),
                 vol.Required(CONF_PROMPT): cv.string,
-                vol.Optional(CONF_FILENAMES, default=[]): vol.All(cv.ensure_list, [cv.string]),
-            }
-        ),
-        supports_response=SupportsResponse.ONLY,
-    )
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GENERATE_IMAGE,
-        render_image,
-        schema=vol.Schema(
-            {
-                vol.Required("config_entry"): selector.ConfigEntrySelector(
-                    {"integration": DOMAIN}
+                vol.Optional(CONF_FILENAMES, default=[]): vol.All(
+                    cv.ensure_list, [cv.string]
                 ),
-                vol.Required(CONF_PROMPT): cv.string,
-                vol.Optional("size", default="1024x1024"): vol.In(("1024x1024", "1024x1792", "1792x1024")),
-                vol.Optional("quality", default="standard"): vol.In(("standard", "hd")),
-                vol.Optional("style", default="vivid"): vol.In(("vivid", "natural")),
             }
         ),
         supports_response=SupportsResponse.ONLY,
@@ -144,13 +112,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Mistral AI Conversation from a config entry."""
-    api_key = entry.data.get(CONF_API_KEY)
-    entry.runtime_data = MistralClient(api_key, get_async_client(hass))
+    """Set up a config entry."""
+    api_key = entry.data[CONF_API_KEY]
+    client = MistralClient(api_key, get_async_client(hass))
+    entry.runtime_data = client
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload Mistral AI."""
+    """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload when options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
