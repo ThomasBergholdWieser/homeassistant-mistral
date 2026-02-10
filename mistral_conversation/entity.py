@@ -290,7 +290,7 @@ class MistralBaseLLMEntity(Entity):
                     # It automatically adds content to the chat log and executes tool calls
                     # We iterate through it to collect all yielded content
                     assistant_content = None
-                    yielded_items = []
+                    yielded_items = []  # Track yielded types for error diagnostics
                     async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream)
                     ):
@@ -302,6 +302,8 @@ class MistralBaseLLMEntity(Entity):
                     # In tool-call-only scenarios, async_add_delta_content_stream may not yield
                     # an AssistantContent object directly. In such cases, we need to retrieve it
                     # from the chat log where it has been added during stream processing.
+                    # The latest AssistantContent in chat_log is guaranteed to be from the current
+                    # streaming operation because we're within the same iteration of the tool loop.
                     if assistant_content is None:
                         assistant_content = next(
                             (c for c in reversed(chat_log.content) if isinstance(c, conversation.AssistantContent)),
