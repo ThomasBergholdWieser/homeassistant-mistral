@@ -143,71 +143,86 @@ def _build_messages(chat_content: Iterable[conversation.Content]) -> list[dict]:
 
 async def _transform_stream(
     stream: AsyncIterator[dict[str, Any]],
-) -> AsyncIterator[conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict]:
-    """Transform Mistral SSE stream into Home Assistant content deltas."""
+) -> AsyncIterator[
+    conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict
+]:
+    """Transform Mistral SSE stream into Home Assistant content deltas.
+
+    We must emit:
+    - AssistantContentDeltaDict(content=...) for text deltas
+    - AssistantContentDeltaDict(tool_calls=[...]) when the model requests tools
+
+    Tool *results* are produced by Home Assistant after executing tools and should
+    not be emitted here.
+    """
     tool_call_buffers: dict[int, dict[str, Any]] = {}
-    
+
     async for chunk in stream:
         choices = chunk.get("choices", [])
         if not choices:
             continue
-            
+
         for choice in choices:
-            delta = choice.get("delta", {})
+            delta = choice.get("delta") or {}
             finish_reason = choice.get("finish_reason")
-            
-            # Handle content deltas
+
+            # Text delta
             if "content" in delta and delta["content"]:
                 yield conversation.AssistantContentDeltaDict(
                     content=delta["content"],
                 )
-            
-            # Handle tool call deltas
-            if "tool_calls" in delta:
+
+            # Tool-call delta accumulation
+            if "tool_calls" in delta and delta["tool_calls"]:
                 for tool_call in delta["tool_calls"]:
                     index = tool_call.get("index", 0)
-                    
-                    # Initialize buffer for this tool call index if needed
-                    if index not in tool_call_buffers:
-                        tool_call_buffers[index] = {
-                            "id": "",
-                            "name": "",
-                            "arguments": "",
-                        }
-                    
-                    buffer = tool_call_buffers[index]
-                    
-                    # Accumulate tool call data
-                    if "id" in tool_call:
-                        buffer["id"] = tool_call["id"]
-                    
-                    if "function" in tool_call:
-                        function = tool_call["function"]
-                        if "name" in function:
-                            buffer["name"] = function["name"]
-                        if "arguments" in function:
-                            buffer["arguments"] += function["arguments"]
-            
-            # On finish, yield accumulated tool calls
-            if finish_reason in ("tool_calls", "stop") and tool_call_buffers:
-                for buffer in tool_call_buffers.values():
-                    if buffer["id"] and buffer["name"]:
-                        try:
-                            args = json.loads(buffer["arguments"]) if buffer["arguments"] else {}
-                        except (ValueError, JSONDecodeError):
-                            LOGGER.warning("Failed to parse tool args '%s'", buffer["arguments"])
-                            args = {}
-                        
-                        tool_input = llm.ToolInput(
-                            tool_name=buffer["name"],
+
+                    buf = tool_call_buffers.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+
+                    if tool_call.get("id"):
+                        buf["id"] = tool_call["id"]
+
+                    fn = tool_call.get("function") or {}
+                    if fn.get("name"):
+                        buf["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        # Mistral streams arguments as partial JSON strings; append
+                        buf["arguments"] += fn["arguments"]
+
+            # When the model indicates tool calls are complete, emit them
+            if finish_reason == "tool_calls" and tool_call_buffers:
+                tool_calls: list[llm.ToolInput] = []
+
+                # Emit tool calls ordered by index for stability
+                for idx in sorted(tool_call_buffers):
+                    buf = tool_call_buffers[idx]
+                    if not (buf["id"] and buf["name"]):
+                        continue
+
+                    try:
+                        args = json.loads(buf["arguments"]) if buf["arguments"] else {}
+                    except (ValueError, JSONDecodeError):
+                        LOGGER.warning(
+                            "Failed to parse streamed tool args '%s'", buf["arguments"]
+                        )
+                        args = {}
+
+                    tool_calls.append(
+                        llm.ToolInput(
+                            tool_name=buf["name"],
                             tool_args=args,
-                            id=buffer["id"],
+                            id=buf["id"],
                         )
-                        yield conversation.ToolResultContentDeltaDict(
-                            tool_call=tool_input,
-                        )
+                    )
+
                 tool_call_buffers.clear()
 
+                if tool_calls:
+                    yield conversation.AssistantContentDeltaDict(
+                        tool_calls=tool_calls,
+                    )
 
 class MistralBaseLLMEntity(Entity):
     """Common functionality for Mistral entities."""
@@ -245,7 +260,7 @@ class MistralBaseLLMEntity(Entity):
         """Generate a new turn for the chat log."""
         options = self._options()
         tools: list[dict] = []
-
+        
         if chat_log.llm_api and chat_log.llm_api.tools:
             tools = [
                 _format_tool(tool, chat_log.llm_api.custom_serializer)
@@ -261,6 +276,8 @@ class MistralBaseLLMEntity(Entity):
                     "content": structure_prompt,
                 },
             )
+        
+        force_final = False
 
         for _ in range(MAX_TOOL_ITERATIONS):
             model_name = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
@@ -280,28 +297,33 @@ class MistralBaseLLMEntity(Entity):
             if tools and not force_final:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
-            elif tools and force_final:
-                # Ask for a final assistant message; do not allow further tool calls
-                payload["tool_choice"] = "none"
-            
+
             try:
                 if use_streaming:
                     # Streaming mode
                     stream = self.client.chat_stream(payload)
-                    
+                
                     # async_add_delta_content_stream returns an async generator that yields content as it processes
                     # It automatically adds content to the chat log and executes tool calls
                     # We iterate through it to collect all yielded content
                     assistant_content = None
+                    saw_tool_call = False
                     yielded_items = []  # Track yielded types for error diagnostics
+                
                     async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream)
                     ):
                         yielded_items.append(type(content).__name__)
                         if isinstance(content, conversation.AssistantContent):
                             assistant_content = content
+                            if content.tool_calls:
+                                saw_tool_call = True
                         # Tool results are also yielded and are automatically added to the chat log
-
+                
+                    # If tool calls were requested in this streaming turn, ensure next iteration asks for a final response
+                    if saw_tool_call:
+                        force_final = True
+                
                     if assistant_content is None:
                         assistant_content = next(
                             (
@@ -311,18 +333,20 @@ class MistralBaseLLMEntity(Entity):
                             ),
                             None,
                         )
-
+                
                     if assistant_content is None:
                         # If HA only yielded tool results, it may not have produced an AssistantContent yet.
                         # In that case, rebuild messages from chat_log and let the loop continue so the LLM
                         # can produce the final assistant response after tools executed.
+                        if force_final:
+                            raise HomeAssistantError("Final response produced no AssistantContent")
                         messages = _build_messages(chat_log.content)
                         continue
-                   
+                
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
                     # easily accessible through the current async generator pattern
-                    
+                
                     # If there were tool calls, execute them and continue the loop
                     # Mirror non-streaming behavior to ensure tool results are added to chat log
                     if assistant_content and assistant_content.tool_calls:
@@ -332,7 +356,7 @@ class MistralBaseLLMEntity(Entity):
                         messages = _build_messages(chat_log.content)
                         force_final = True
                         continue
-                    
+                
                     # No tool calls, we're done
                     return assistant_content
                 else:
