@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict
+from typing import Any, AsyncIterator, Dict
 
 import httpx
 
@@ -50,3 +51,32 @@ class MistralClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def chat_stream(self, payload: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+        """Send a chat payload to Mistral and stream the response."""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        async with self.http_client.stream(
+            "POST",
+            MISTRAL_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=60,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[6:]  # Remove "data: " prefix
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        yield chunk
+                    except json.JSONDecodeError:
+                        LOGGER.warning("Failed to parse SSE chunk: %s", data)
+                        continue

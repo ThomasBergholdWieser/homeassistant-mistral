@@ -36,7 +36,7 @@ class MistralConversationEntity(
 ):
     """Conversation agent for Mistral."""
 
-    _attr_supports_streaming = False
+    _attr_supports_streaming = True
 
     def __init__(self, entry: ConfigEntry, subentry: ConfigSubentry) -> None:
         super().__init__(entry, subentry)

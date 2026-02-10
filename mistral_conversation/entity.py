@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from json import JSONDecodeError
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, AsyncIterator, Callable, Iterable, Literal
 
 from voluptuous_openapi import convert
 
@@ -140,6 +140,82 @@ def _build_messages(chat_content: Iterable[conversation.Content]) -> list[dict]:
     return messages
 
 
+async def _transform_stream(
+    stream: AsyncIterator[dict[str, Any]],
+) -> AsyncIterator[conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict]:
+    """Transform Mistral SSE stream into Home Assistant content deltas."""
+    tool_call_buffers: dict[int, dict[str, Any]] = {}
+    usage_data: dict[str, Any] | None = None
+    
+    async for chunk in stream:
+        # Store usage data from the last chunk
+        if "usage" in chunk:
+            usage_data = chunk["usage"]
+        
+        choices = chunk.get("choices", [])
+        if not choices:
+            continue
+            
+        for choice in choices:
+            delta = choice.get("delta", {})
+            finish_reason = choice.get("finish_reason")
+            
+            # Handle content deltas
+            if "content" in delta and delta["content"]:
+                yield conversation.AssistantContentDeltaDict(
+                    content=delta["content"],
+                )
+            
+            # Handle tool call deltas
+            if "tool_calls" in delta:
+                for tool_call in delta["tool_calls"]:
+                    index = tool_call.get("index", 0)
+                    
+                    # Initialize buffer for this tool call index if needed
+                    if index not in tool_call_buffers:
+                        tool_call_buffers[index] = {
+                            "id": "",
+                            "name": "",
+                            "arguments": "",
+                        }
+                    
+                    buffer = tool_call_buffers[index]
+                    
+                    # Accumulate tool call data
+                    if "id" in tool_call:
+                        buffer["id"] = tool_call["id"]
+                    
+                    if "function" in tool_call:
+                        function = tool_call["function"]
+                        if "name" in function:
+                            buffer["name"] = function["name"]
+                        if "arguments" in function:
+                            buffer["arguments"] += function["arguments"]
+            
+            # On finish, yield accumulated tool calls
+            if finish_reason in ("tool_calls", "stop") and tool_call_buffers:
+                for buffer in tool_call_buffers.values():
+                    if buffer["id"] and buffer["name"]:
+                        try:
+                            args = json.loads(buffer["arguments"]) if buffer["arguments"] else {}
+                        except (ValueError, JSONDecodeError):
+                            LOGGER.warning("Failed to parse tool args '%s'", buffer["arguments"])
+                            args = {}
+                        
+                        tool_input = llm.ToolInput(
+                            tool_name=buffer["name"],
+                            tool_args=args,
+                            id=buffer["id"],
+                        )
+                        yield conversation.ToolResultContentDeltaDict(
+                            tool_call=tool_input,
+                        )
+                tool_call_buffers.clear()
+    
+    # Return usage data if available
+    return usage_data
+
+
 class MistralBaseLLMEntity(Entity):
     """Common functionality for Mistral entities."""
 
@@ -171,6 +247,7 @@ class MistralBaseLLMEntity(Entity):
         hass: HomeAssistant,
         chat_log: conversation.ChatLog,
         structure_prompt: str | None = None,
+        use_streaming: bool = True,
     ) -> conversation.AssistantContent:
         """Generate a new turn for the chat log."""
         options = self._options()
@@ -200,7 +277,7 @@ class MistralBaseLLMEntity(Entity):
                 "max_tokens": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-                "stream": False,
+                "stream": use_streaming,
             }
             # Only add reasoning_effort for magistral models
             if model_name.startswith("magistral"):
@@ -210,8 +287,60 @@ class MistralBaseLLMEntity(Entity):
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
+            
             try:
-                response = await self.client.chat(payload)
+                if use_streaming:
+                    # Streaming mode
+                    stream = self.client.chat_stream(payload)
+                    
+                    async def stream_generator():
+                        usage_data = None
+                        async for delta in _transform_stream(stream):
+                            yield delta
+                            # Note: usage data is returned at the end of _transform_stream
+                            # but we can't easily capture it here without modifying the API
+                    
+                    assistant_content = await chat_log.async_add_delta_content_stream(
+                        self.entity_id, stream_generator()
+                    )
+                    
+                    # For streaming, we don't get usage data easily, so we skip tracking
+                    # TODO: Consider accumulating usage from the last chunk
+                    
+                else:
+                    # Non-streaming mode (fallback)
+                    response = await self.client.chat(payload)
+                    
+                    if not response or "choices" not in response or not response["choices"]:
+                        raise HomeAssistantError("No response from Mistral API")
+
+                    message = response["choices"][0]["message"]
+                    assistant_tool_calls = _convert_tool_calls(message.get("tool_calls"))
+                    assistant_content = conversation.AssistantContent(
+                        agent_id=self.entity_id,
+                        content=_message_content_to_text(message.get("content")),
+                        tool_calls=assistant_tool_calls,
+                    )
+                    
+                    # Track token usage for non-streaming
+                    if usage := response.get("usage"):
+                        chat_log.async_trace({
+                            "stats": {
+                                "input_tokens": usage.get("prompt_tokens", 0),
+                                "output_tokens": usage.get("completion_tokens", 0),
+                            }
+                        })
+                    
+                    if assistant_tool_calls:
+                        tool_results = chat_log.async_add_assistant_content(assistant_content)
+                        async for _ in tool_results:
+                            pass
+                        messages = _build_messages(chat_log.content)
+                        continue
+
+                    chat_log.async_add_assistant_content_without_tools(assistant_content)
+                    return assistant_content
+                    
             except Exception as err:
                 import httpx
                 if isinstance(err, httpx.HTTPStatusError):
@@ -234,26 +363,17 @@ class MistralBaseLLMEntity(Entity):
                 else:
                     LOGGER.error("Error talking to Mistral: %s", err)
                     raise HomeAssistantError("Error talking to Mistral") from err
-
-            if not response or "choices" not in response or not response["choices"]:
-                raise HomeAssistantError("No response from Mistral API")
-
-            message = response["choices"][0]["message"]
-            assistant_tool_calls = _convert_tool_calls(message.get("tool_calls"))
-            assistant_content = conversation.AssistantContent(
-                agent_id=self.entity_id,
-                content=_message_content_to_text(message.get("content")),
-                tool_calls=assistant_tool_calls,
-            )
-
-            if assistant_tool_calls:
+            
+            # Handle tool calls from streaming
+            if assistant_content.tool_calls:
                 tool_results = chat_log.async_add_assistant_content(assistant_content)
                 async for _ in tool_results:
                     pass
                 messages = _build_messages(chat_log.content)
                 continue
 
-            chat_log.async_add_assistant_content_without_tools(assistant_content)
-            return assistant_content
+            if not assistant_content.tool_calls:
+                chat_log.async_add_assistant_content_without_tools(assistant_content)
+                return assistant_content
 
         raise HomeAssistantError("Too many tool iterations without response")
