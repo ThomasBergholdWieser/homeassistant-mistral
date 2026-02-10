@@ -286,9 +286,17 @@ class MistralBaseLLMEntity(Entity):
                     # Streaming mode
                     stream = self.client.chat_stream(payload)
                     
-                    assistant_content = await chat_log.async_add_delta_content_stream(
+                    # async_add_delta_content_stream returns an async generator that yields content as it processes
+                    # We iterate through it to get the final assistant content
+                    assistant_content = None
+                    async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream)
-                    )
+                    ):
+                        if isinstance(content, conversation.AssistantContent):
+                            assistant_content = content
+                    
+                    if assistant_content is None:
+                        raise HomeAssistantError("No assistant content received from streaming")
                     
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
