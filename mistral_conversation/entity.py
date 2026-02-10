@@ -290,15 +290,30 @@ class MistralBaseLLMEntity(Entity):
                     # It automatically adds content to the chat log and executes tool calls
                     # We iterate through it to collect all yielded content
                     assistant_content = None
+                    yielded_items = []
                     async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream)
                     ):
+                        yielded_items.append(type(content).__name__)
                         if isinstance(content, conversation.AssistantContent):
                             assistant_content = content
                         # Tool results are also yielded and are automatically added to the chat log
                     
+                    # In tool-call-only scenarios, async_add_delta_content_stream may not yield
+                    # an AssistantContent object directly. In such cases, we need to retrieve it
+                    # from the chat log where it has been added during stream processing.
                     if assistant_content is None:
-                        raise HomeAssistantError("No assistant content received from streaming. The stream may have been empty or only contained tool results.")
+                        assistant_content = next(
+                            (c for c in reversed(chat_log.content) if isinstance(c, conversation.AssistantContent)),
+                            None,
+                        )
+                    
+                    if assistant_content is None:
+                        raise HomeAssistantError(
+                            f"No assistant content received from streaming. "
+                            f"Yielded items: {yielded_items if yielded_items else 'none'}. "
+                            f"The stream may have been empty or failed to produce content."
+                        )
                     
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
