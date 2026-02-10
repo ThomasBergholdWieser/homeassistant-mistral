@@ -14,8 +14,7 @@ generate_content:
       example: "Hello, how can I help you?"
     filenames:
       selector:
-        text:
-          multiline: true
-      example: |
+        object:
+      example:
         - /path/to/file1.txt
         - /path/to/file2.txt
