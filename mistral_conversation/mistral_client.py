@@ -42,22 +42,11 @@ class MistralClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        try:
-            response = await self.http_client.post(
-                MISTRAL_API_URL,
-                json=payload,
-                headers=headers,
-                timeout=60,
-            )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as err:
-            LOGGER.error(
-                "Mistral API HTTP error: %s | Response: %s",
-                err,
-                err.response.text if err.response else None,
-            )
-            raise
-        except Exception as err:
-            LOGGER.error("Mistral API error: %s", err)
-            raise
+        response = await self.http_client.post(
+            MISTRAL_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.json()

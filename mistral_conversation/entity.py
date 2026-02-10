@@ -20,6 +20,7 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
+    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DEFAULT_NAME,
@@ -27,6 +28,7 @@ from .const import (
     MAX_TOOL_ITERATIONS,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
+    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
@@ -191,22 +193,47 @@ class MistralBaseLLMEntity(Entity):
             )
 
         for _ in range(MAX_TOOL_ITERATIONS):
+            model_name = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
             payload = {
-                "model": options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
+                "model": model_name,
                 "messages": messages,
                 "max_tokens": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "stream": False,
             }
+            # Only add reasoning_effort for magistral models
+            if model_name.startswith("magistral"):
+                payload["reasoning_effort"] = options.get(
+                    CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
+                )
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
             try:
                 response = await self.client.chat(payload)
             except Exception as err:
-                LOGGER.error("Error talking to Mistral: %s", err)
-                raise HomeAssistantError("Error talking to Mistral") from err
+                import httpx
+                if isinstance(err, httpx.HTTPStatusError):
+                    status = err.response.status_code
+                    if status == 429:
+                        LOGGER.error("Rate limited by Mistral API")
+                        raise HomeAssistantError("Rate limited by Mistral API") from err
+                    elif status == 401:
+                        LOGGER.error("Authentication error with Mistral API")
+                        raise HomeAssistantError("Authentication error with Mistral API") from err
+                    elif status in (402, 403):
+                        LOGGER.error("Insufficient quota for Mistral API")
+                        raise HomeAssistantError("Insufficient quota for Mistral API") from err
+                    else:
+                        LOGGER.error("HTTP error talking to Mistral: %s", err)
+                        raise HomeAssistantError("Error talking to Mistral") from err
+                elif isinstance(err, httpx.TimeoutException):
+                    LOGGER.error("Mistral API request timed out")
+                    raise HomeAssistantError("Mistral API request timed out") from err
+                else:
+                    LOGGER.error("Error talking to Mistral: %s", err)
+                    raise HomeAssistantError("Error talking to Mistral") from err
 
             if not response or "choices" not in response or not response["choices"]:
                 raise HomeAssistantError("No response from Mistral API")
