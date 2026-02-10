@@ -152,7 +152,7 @@ class MistralBaseLLMEntity(Entity):
             identifiers={(entry.domain, subentry.subentry_id)},
             name=entry.title or DEFAULT_NAME,
             manufacturer="Mistral AI",
-            model="Mistral Chat",
+            model=subentry.data.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
             entry_type=dr.DeviceEntryType.SERVICE,
         )
 

@@ -9,6 +9,7 @@ from typing import Any, Dict
 import httpx
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -22,6 +23,18 @@ class MistralClient:
             raise ValueError("HTTP client required for Mistral client")
         self.api_key = api_key
         self.http_client = http_client
+
+    async def validate_api_key(self) -> None:
+        """Validate the API key by listing models."""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        response = await self.http_client.get(
+            MISTRAL_MODELS_URL,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
 
     async def chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Send a chat payload to Mistral."""
