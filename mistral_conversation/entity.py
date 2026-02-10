@@ -277,9 +277,12 @@ class MistralBaseLLMEntity(Entity):
                 payload["reasoning_effort"] = options.get(
                     CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
                 )
-            if tools:
+            if tools and not force_final:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
+            elif tools and force_final:
+                # Ask for a final assistant message; do not allow further tool calls
+                payload["tool_choice"] = "none"
             
             try:
                 if use_streaming:
@@ -327,6 +330,7 @@ class MistralBaseLLMEntity(Entity):
                         async for _ in tool_results:
                             pass
                         messages = _build_messages(chat_log.content)
+                        force_final = True
                         continue
                     
                     # No tool calls, we're done
@@ -360,6 +364,7 @@ class MistralBaseLLMEntity(Entity):
                         async for _ in tool_results:
                             pass
                         messages = _build_messages(chat_log.content)
+                        force_final = True
                         continue
 
                     chat_log.async_add_assistant_content_without_tools(assistant_content)
