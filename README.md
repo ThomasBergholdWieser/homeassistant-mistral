@@ -10,12 +10,19 @@ Mit dieser Custom Component kannst du Mistral AI direkt in Home Assistant nutzen
 
 ### Was kann die Integration?
 
+- **TARS-Persönlichkeit aus Interstellar** – witzig, sarkastisch und trotzdem zuverlässig (Humor-Level: 75%)
 - Nutzt die [Mistral Chat API](https://docs.mistral.ai/api/) für Antworten und Steuerbefehle
+- **Streaming-Antworten (SSE)** für schnellere, flüssigere Konversationen
 - Funktioniert mit dem Home Assistant Conversation-Agent (Sprachsteuerung, Chat, Automationen)
 - Unterstützt AI Tasks (strukturierte Ausgabe/JSON, Automationen, Datenverarbeitung)
 - Auswahl des Mistral-Modells direkt über die Optionsoberfläche (nach Deaktivieren der empfohlenen Einstellungen)
-- Tool-Calls und Home-Assistant-LLM-APIs werden an Mistral durchgeschleift, sodass z. B. `GetLiveContext` oder Intent-Tools funktionieren
-- System-Prompt sorgt dafür, dass die KI sich auf Smart-Home-Kommandos konzentriert
+- Tool-Calls und Home-Assistant-LLM-APIs werden an Mistral durchgeschleift, sodass z. B. `GetLiveContext` oder Intent-Tools funktionieren
+- **API-Key wird beim Setup automatisch validiert**
+- **Granulare Fehlerbehandlung** (Rate Limits, Auth-Fehler, Quota, Timeouts)
+- **Token-Verbrauch wird automatisch getrackt**
+- **Unterstützung für `reasoning_effort`** bei Magistral-Modellen
+- **`max_tokens` Standard auf 4096 erhöht** (vorher 512)
+- **Dynamische Modellanzeige im Device-Info**
 - Keine Bildgenerierung (Mistral stellt keine Image-API bereit)
 
 ### Was brauchst du?
@@ -36,7 +43,7 @@ Mit dieser Custom Component kannst du Mistral AI direkt in Home Assistant nutzen
 2. Gib deinen API-Key ein. Danach findest du mindestens zwei Entitäten:
    - `conversation.mistral_ai…` – Conversation-Agent für Voice/Chat
    - `ai_task.mistral_ai_task…` – AI-Task-Entity für strukturierte Ausgaben
-3. Unter „Konfigurieren“ kannst du die empfohlenen Einstellungen übernehmen oder (Haken entfernen) Modell, `max_tokens`, `temperature`, `top_p`, `reasoning_effort` usw. selbst setzen.
+3. Unter „Konfigurieren" kannst du die empfohlenen Einstellungen übernehmen oder (Haken entfernen) Modell, `max_tokens`, `temperature`, `top_p`, `reasoning_effort` usw. selbst setzen.
 
 #### Beispiel-Workflows
 
@@ -57,7 +64,7 @@ action:
 ```
 
 **2. Service `mistral_ai_api.generate_content` (synchroner Text)**  
-Der Service liefert das Ergebnis sofort in `response.text`, wodurch du den Text z. B. an Notification-Dienste senden kannst:
+Der Service liefert das Ergebnis sofort in `response.text`, wodurch du den Text z. B. an Notification-Dienste senden kannst:
 
 ```yaml
 alias: "Mistral Service Beispiel"
@@ -130,16 +137,24 @@ This custom component lets you use Mistral AI in Home Assistant – for voice co
 
 ### What does it do?
 
+- **TARS personality from Interstellar** – witty, sarcastic, and still reliable (humor setting: 75%)
 - Uses the [Mistral Chat API](https://docs.mistral.ai/api/) for smart replies and home control
+- **Streaming responses (SSE)** for faster, smoother conversations
 - Works with Home Assistant Conversation (voice, chat, automations)
+- Supports AI Tasks (structured output/JSON, automations, data processing)
 - You can pick the Mistral model right in the UI (e.g. `mistral-medium`, `mistral-large`)
-- System prompt keeps the AI focused on smart home commands
-- Conversation history is saved (if you want)
+- Tool calls and Home Assistant LLM APIs are passed through to Mistral (e.g., `GetLiveContext`, intent tools)
+- **API key is automatically validated on setup**
+- **Granular error handling** (rate limits, auth errors, quota, timeouts)
+- **Token usage is automatically tracked**
+- **Support for `reasoning_effort`** with Magistral models
+- **`max_tokens` default increased to 4096** (previously 512)
+- **Dynamic model display in device info**
 - No image generation (Mistral doesn't support it yet)
 
 ### What do you need?
 
-- Home Assistant (tested from version 2024.5)
+- Home Assistant (tested from version 2025.12)
 - A Mistral API key ([get one here](https://console.mistral.ai/))
 
 ### Installation
