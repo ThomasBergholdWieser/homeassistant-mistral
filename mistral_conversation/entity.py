@@ -287,13 +287,18 @@ class MistralBaseLLMEntity(Entity):
                     stream = self.client.chat_stream(payload)
                     
                     # async_add_delta_content_stream returns an async generator that yields content as it processes
-                    # We iterate through it to get the final assistant content
+                    # It automatically adds content to the chat log and executes tool calls
+                    # We iterate through it to collect all yielded content
                     assistant_content = None
+                    has_tool_calls = False
                     async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream)
                     ):
                         if isinstance(content, conversation.AssistantContent):
                             assistant_content = content
+                            if content.tool_calls:
+                                has_tool_calls = True
+                        # Tool results are also yielded and are automatically added to the chat log
                     
                     if assistant_content is None:
                         raise HomeAssistantError("No assistant content received from streaming")
@@ -302,6 +307,14 @@ class MistralBaseLLMEntity(Entity):
                     # as the Mistral API returns usage in the final chunk which is not
                     # easily accessible through the current async generator pattern
                     
+                    # If there were tool calls, continue the loop to get the next response
+                    # The tool results have already been added to the chat log by async_add_delta_content_stream
+                    if has_tool_calls:
+                        messages = _build_messages(chat_log.content)
+                        continue
+                    
+                    # No tool calls, we're done
+                    return assistant_content
                 else:
                     # Non-streaming mode (fallback)
                     response = await self.client.chat(payload)
@@ -357,16 +370,5 @@ class MistralBaseLLMEntity(Entity):
                 else:
                     LOGGER.error("Error talking to Mistral: %s", err)
                     raise HomeAssistantError("Error talking to Mistral") from err
-            
-            # Handle tool calls from streaming
-            if assistant_content.tool_calls:
-                tool_results = chat_log.async_add_assistant_content(assistant_content)
-                async for _ in tool_results:
-                    pass
-                messages = _build_messages(chat_log.content)
-                continue
-
-            chat_log.async_add_assistant_content_without_tools(assistant_content)
-            return assistant_content
 
         raise HomeAssistantError("Too many tool iterations without response")
