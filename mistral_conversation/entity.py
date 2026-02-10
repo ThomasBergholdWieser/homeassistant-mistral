@@ -7,6 +7,7 @@ import json
 from json import JSONDecodeError
 from typing import Any, AsyncIterator, Callable, Iterable, Literal
 
+import httpx
 from voluptuous_openapi import convert
 
 from homeassistant.components import conversation
@@ -145,13 +146,8 @@ async def _transform_stream(
 ) -> AsyncIterator[conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict]:
     """Transform Mistral SSE stream into Home Assistant content deltas."""
     tool_call_buffers: dict[int, dict[str, Any]] = {}
-    usage_data: dict[str, Any] | None = None
     
     async for chunk in stream:
-        # Store usage data from the last chunk
-        if "usage" in chunk:
-            usage_data = chunk["usage"]
-        
         choices = chunk.get("choices", [])
         if not choices:
             continue
@@ -211,9 +207,6 @@ async def _transform_stream(
                             tool_call=tool_input,
                         )
                 tool_call_buffers.clear()
-    
-    # Return usage data if available
-    return usage_data
 
 
 class MistralBaseLLMEntity(Entity):
@@ -293,19 +286,13 @@ class MistralBaseLLMEntity(Entity):
                     # Streaming mode
                     stream = self.client.chat_stream(payload)
                     
-                    async def stream_generator():
-                        usage_data = None
-                        async for delta in _transform_stream(stream):
-                            yield delta
-                            # Note: usage data is returned at the end of _transform_stream
-                            # but we can't easily capture it here without modifying the API
-                    
                     assistant_content = await chat_log.async_add_delta_content_stream(
-                        self.entity_id, stream_generator()
+                        self.entity_id, _transform_stream(stream)
                     )
                     
-                    # For streaming, we don't get usage data easily, so we skip tracking
-                    # TODO: Consider accumulating usage from the last chunk
+                    # Note: Usage data tracking for streaming mode is not yet implemented
+                    # as the Mistral API returns usage in the final chunk which is not
+                    # easily accessible through the current async generator pattern
                     
                 else:
                     # Non-streaming mode (fallback)
@@ -342,7 +329,6 @@ class MistralBaseLLMEntity(Entity):
                     return assistant_content
                     
             except Exception as err:
-                import httpx
                 if isinstance(err, httpx.HTTPStatusError):
                     status = err.response.status_code
                     if status == 429:
@@ -372,8 +358,7 @@ class MistralBaseLLMEntity(Entity):
                 messages = _build_messages(chat_log.content)
                 continue
 
-            if not assistant_content.tool_calls:
-                chat_log.async_add_assistant_content_without_tools(assistant_content)
-                return assistant_content
+            chat_log.async_add_assistant_content_without_tools(assistant_content)
+            return assistant_content
 
         raise HomeAssistantError("Too many tool iterations without response")
