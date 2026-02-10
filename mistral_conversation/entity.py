@@ -298,32 +298,33 @@ class MistralBaseLLMEntity(Entity):
                         if isinstance(content, conversation.AssistantContent):
                             assistant_content = content
                         # Tool results are also yielded and are automatically added to the chat log
-                    
-                    # In tool-call-only scenarios, async_add_delta_content_stream may not yield
-                    # an AssistantContent object directly. In such cases, we need to retrieve it
-                    # from the chat log where it has been added during stream processing.
-                    # The latest AssistantContent in chat_log is guaranteed to be from the current
-                    # streaming operation because we're within the same iteration of the tool loop.
+
                     if assistant_content is None:
                         assistant_content = next(
-                            (c for c in reversed(chat_log.content) if isinstance(c, conversation.AssistantContent)),
+                            (
+                                content
+                                for content in reversed(chat_log.content)
+                                if isinstance(content, conversation.AssistantContent)
+                            ),
                             None,
                         )
-                    
+
                     if assistant_content is None:
-                        raise HomeAssistantError(
-                            f"No assistant content received from streaming. "
-                            f"Yielded items: {yielded_items if yielded_items else 'none'}. "
-                            f"The stream may have been empty or failed to produce content."
-                        )
-                    
+                        # If HA only yielded tool results, it may not have produced an AssistantContent yet.
+                        # In that case, rebuild messages from chat_log and let the loop continue so the LLM
+                        # can produce the final assistant response after tools executed.
+                        messages = _build_messages(chat_log.content)
+                        continue
+                   
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
                     # easily accessible through the current async generator pattern
                     
                     # If there were tool calls, continue the loop to get the next response
                     # The tool results have already been added to the chat log by async_add_delta_content_stream
-                    if assistant_content.tool_calls:
+                    if assistant_content is None:
+                        if not yielded_items and not chat_log.content:
+                            raise HomeAssistantError("Streaming produced no items at all.")
                         messages = _build_messages(chat_log.content)
                         continue
                     
