@@ -320,11 +320,12 @@ class MistralBaseLLMEntity(Entity):
                     # as the Mistral API returns usage in the final chunk which is not
                     # easily accessible through the current async generator pattern
                     
-                    # If there were tool calls, continue the loop to get the next response
-                    # The tool results have already been added to the chat log by async_add_delta_content_stream
-                    if assistant_content is None:
-                        if not yielded_items and not chat_log.content:
-                            raise HomeAssistantError("Streaming produced no items at all.")
+                    # If there were tool calls, execute them and continue the loop
+                    # Mirror non-streaming behavior to ensure tool results are added to chat log
+                    if assistant_content.tool_calls:
+                        tool_results = chat_log.async_add_assistant_content(assistant_content)
+                        async for _ in tool_results:
+                            pass
                         messages = _build_messages(chat_log.content)
                         continue
                     
