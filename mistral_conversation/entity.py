@@ -290,18 +290,15 @@ class MistralBaseLLMEntity(Entity):
                     # It automatically adds content to the chat log and executes tool calls
                     # We iterate through it to collect all yielded content
                     assistant_content = None
-                    has_tool_calls = False
                     async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream)
                     ):
                         if isinstance(content, conversation.AssistantContent):
                             assistant_content = content
-                            if content.tool_calls:
-                                has_tool_calls = True
                         # Tool results are also yielded and are automatically added to the chat log
                     
                     if assistant_content is None:
-                        raise HomeAssistantError("No assistant content received from streaming")
+                        raise HomeAssistantError("No assistant content received from streaming. The stream may have been empty or only contained tool results.")
                     
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
@@ -309,7 +306,7 @@ class MistralBaseLLMEntity(Entity):
                     
                     # If there were tool calls, continue the loop to get the next response
                     # The tool results have already been added to the chat log by async_add_delta_content_stream
-                    if has_tool_calls:
+                    if assistant_content.tool_calls:
                         messages = _build_messages(chat_log.content)
                         continue
                     
