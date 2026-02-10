@@ -322,7 +322,7 @@ class MistralBaseLLMEntity(Entity):
                     
                     # If there were tool calls, execute them and continue the loop
                     # Mirror non-streaming behavior to ensure tool results are added to chat log
-                    if assistant_content.tool_calls:
+                    if assistant_content and assistant_content.tool_calls:
                         tool_results = chat_log.async_add_assistant_content(assistant_content)
                         async for _ in tool_results:
                             pass
