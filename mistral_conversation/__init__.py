@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError, ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv, device_registry as dr, entity_registry as er, selector
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.typing import ConfigType
@@ -70,10 +70,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     raise HomeAssistantError(
                         f"Cannot read `{filename}`; adjust allowlist_external_dirs"
                     )
+                content = await hass.async_add_executor_job(Path(filename).read_text)
                 messages.append(
                     {
                         "role": "user",
-                        "content": Path(filename).read_text(),
+                        "content": content,
                     }
                 )
 
@@ -115,6 +116,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
     api_key = entry.data[CONF_API_KEY]
     client = MistralClient(api_key, get_async_client(hass))
+    
+    # Validate API key on setup
+    try:
+        await client.validate_api_key()
+    except Exception as err:
+        import httpx
+        if isinstance(err, httpx.HTTPStatusError):
+            if err.response.status_code == 401:
+                raise ConfigEntryAuthFailed("Invalid API key") from err
+            raise ConfigEntryNotReady(f"Failed to validate API key: {err}") from err
+        raise ConfigEntryNotReady(f"Failed to connect to Mistral API: {err}") from err
+    
     entry.runtime_data = client
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
