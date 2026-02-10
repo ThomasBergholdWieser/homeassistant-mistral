@@ -296,10 +296,24 @@ class MistralBaseLLMEntity(Entity):
                         if isinstance(content, conversation.AssistantContent):
                             assistant_content = content
                         # Tool results are also yielded and are automatically added to the chat log
-                    
+
                     if assistant_content is None:
-                        raise HomeAssistantError("No assistant content received from streaming. The stream may have been empty or only contained tool results.")
-                    
+                        assistant_content = next(
+                            (
+                                content
+                                for content in reversed(chat_log.content)
+                                if isinstance(content, conversation.AssistantContent)
+                            ),
+                            None,
+                        )
+
+                    if assistant_content is None:
+                        # If HA only yielded tool results, it may not have produced an AssistantContent yet.
+                        # In that case, rebuild messages from chat_log and let the loop continue so the LLM
+                        # can produce the final assistant response after tools executed.
+                        messages = _build_messages(chat_log.content)
+                        continue
+                   
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
                     # easily accessible through the current async generator pattern
