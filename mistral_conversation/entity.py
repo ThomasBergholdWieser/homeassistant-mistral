@@ -401,6 +401,14 @@ class MistralBaseLLMEntity(Entity):
             except Exception as err:
                 if isinstance(err, httpx.HTTPStatusError):
                     status = err.response.status_code
+                    body_text = "<unavailable>"
+                    try:
+                        # For streaming responses, we must read() before accessing text/content
+                        raw = await err.response.aread()
+                        body_text = raw.decode(errors="replace")
+                    except Exception:  # noqa: BLE001
+                        body_text = str(err)
+
                     if status == 429:
                         LOGGER.error("Rate limited by Mistral API")
                         raise HomeAssistantError("Rate limited by Mistral API") from err
