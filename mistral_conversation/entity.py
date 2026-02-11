@@ -297,7 +297,11 @@ class MistralBaseLLMEntity(Entity):
             if tools and not force_final:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
-
+            else:
+                # Never send tool_choice without tools (Mistral may return 400 otherwise)
+                payload.pop("tool_choice", None)
+                payload.pop("tools", None)
+                
             try:
                 if use_streaming:
                     # Streaming mode
