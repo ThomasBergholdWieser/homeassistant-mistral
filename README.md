@@ -10,7 +10,6 @@ Mit dieser Custom Component kannst du Mistral AI direkt in Home Assistant nutzen
 
 ### Was kann die Integration?
 
-- **TARS-Persönlichkeit aus Interstellar** – witzig, sarkastisch und trotzdem zuverlässig (Humor-Level: 75%)
 - Nutzt die [Mistral Chat API](https://docs.mistral.ai/api/) für Antworten und Steuerbefehle
 - **Streaming-Antworten (SSE)** für schnellere, flüssigere Konversationen
 - Funktioniert mit dem Home Assistant Conversation-Agent (Sprachsteuerung, Chat, Automationen)
@@ -137,7 +136,6 @@ This custom component lets you use Mistral AI in Home Assistant – for voice co
 
 ### What does it do?
 
-- **TARS personality from Interstellar** – witty, sarcastic, and still reliable (humor setting: 75%)
 - Uses the [Mistral Chat API](https://docs.mistral.ai/api/) for smart replies and home control
 - **Streaming responses (SSE)** for faster, smoother conversations
 - Works with Home Assistant Conversation (voice, chat, automations)
