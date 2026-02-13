@@ -35,11 +35,10 @@ from .const import (
 )
 from .mistral_client import MistralClient
 
-# --- ID normalization helpers for Mistral tool-call IDs ---
-# These additions strictly implement a per-request in-memory mapping between
-# internal/original tool-call IDs and Mistral-safe 9-char alphanumeric IDs.
-# The rest of the file is left unchanged; only the tool id handling paths
-# have been adapted to use this mapping.
+# --- Minimal additions: ID normalization helpers for Mistral tool-call IDs ---
+# These implement a per-request in-memory mapping between internal/original
+# tool-call IDs and Mistral-safe 9-char alphanumeric IDs. Only the ID paths
+# are changed; all existing error handling and control flow is preserved.
 
 import secrets
 import string
@@ -194,7 +193,7 @@ def _convert_chat_content(content: conversation.Content, id_map: Dict[str, str] 
 
 
 def _build_messages(chat_content: Iterable[conversation.Content], id_map: Dict[str, str] | None = None) -> list[dict]:
-    """Serialize the entire chat log using id_map to normalize tool ids."""
+    """Serialize the entire chat log."""
     id_map = id_map or {}
     messages: list[dict] = []
     for content in chat_content:
@@ -210,8 +209,12 @@ async def _transform_stream(
 ]:
     """Transform Mistral SSE stream into Home Assistant content deltas.
 
-    Accepts id_map to map incoming Mistral tool IDs back to original IDs so Home Assistant
-    executes tools with internal IDs that it understands.
+    We must emit:
+    - AssistantContentDeltaDict(content=...) for text deltas
+    - AssistantContentDeltaDict(tool_calls=[...]) when the model requests tools
+
+    Tool *results* are produced by Home Assistant after executing tools and should
+    not be emitted here.
     """
     tool_call_buffers: dict[int, dict[str, Any]] = {}
 
@@ -240,7 +243,6 @@ async def _transform_stream(
                     )
 
                     if tool_call.get("id"):
-                        # Mistral emits its own 9-char tool id; store as-is in buffer
                         buf["id"] = tool_call["id"]
 
                     fn = tool_call.get("function") or {}
@@ -286,37 +288,50 @@ async def _transform_stream(
                         tool_calls=tool_calls,
                     )
 
-
-# ---------------------------------------------------------------------
-# Integration point: where messages are built and the request/stream is started.
-# The following logic shows the minimal change: create an id_map per request/stream
-# and use it when building messages and transforming the stream. The rest of your
-# existing turn/loop logic (MAX_TOOL_ITERATIONS etc.) is preserved.
-# ---------------------------------------------------------------------
-
-
 class MistralBaseLLMEntity(Entity):
     """Common functionality for Mistral entities."""
 
-    # NOTE: The real file contains other methods and members. This method is the
-    # adapted conversational turn logic showing where id_map is created and used.
-    async def _generate_turn(
+    _attr_has_entity_name = True
+    _attr_name = None
+
+    def __init__(self, entry: ConfigEntry, subentry: ConfigSubentry) -> None:
+        self.entry = entry
+        self.subentry = subentry
+        self._attr_unique_id = subentry.subentry_id
+        self._attr_device_info = dr.DeviceInfo(
+            identifiers={(entry.domain, subentry.subentry_id)},
+            name=entry.title or DEFAULT_NAME,
+            manufacturer="Mistral AI",
+            model=subentry.data.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
+            entry_type=dr.DeviceEntryType.SERVICE,
+        )
+
+    @property
+    def client(self) -> MistralClient:
+        """Return the cached API client."""
+        return self.entry.runtime_data
+
+    def _options(self) -> dict[str, Any]:
+        return self.subentry.data or {}
+
+    async def _async_handle_chat_log(
         self,
-        chat_log,
+        hass: HomeAssistant,
+        chat_log: conversation.ChatLog,
         structure_prompt: str | None = None,
         use_streaming: bool = True,
     ) -> conversation.AssistantContent:
         """Generate a new turn for the chat log."""
         options = self._options()
         tools: list[dict] = []
-
+        
         if chat_log.llm_api and chat_log.llm_api.tools:
             tools = [
                 _format_tool(tool, chat_log.llm_api.custom_serializer)
                 for tool in chat_log.llm_api.tools
             ]
 
-        # Create a fresh mapping for this request/stream
+        # Create a per-request id_map and pass it into message-building and stream transform
         id_map: Dict[str, str] = {}
         messages = _build_messages(chat_log.content, id_map)
         if structure_prompt:
@@ -327,7 +342,7 @@ class MistralBaseLLMEntity(Entity):
                     "content": structure_prompt,
                 },
             )
-
+        
         force_final = False
 
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -349,22 +364,22 @@ class MistralBaseLLMEntity(Entity):
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
             else:
-                # Never send tool_choice without tools (Mistral may return 400 otherwise)
+                # Ensure we never send tool_choice without tools (Mistral 400)
                 payload.pop("tool_choice", None)
                 payload.pop("tools", None)
-
+                
             try:
                 if use_streaming:
                     # Streaming mode
                     stream = self.client.chat_stream(payload)
-
+                
                     # async_add_delta_content_stream returns an async generator that yields content as it processes
                     # It automatically adds content to the chat log and executes tool calls
                     # We iterate through it to collect all yielded content
                     assistant_content = None
                     saw_tool_call = False
                     yielded_items = []  # Track yielded types for error diagnostics
-
+                
                     async for content in chat_log.async_add_delta_content_stream(
                         self.entity_id, _transform_stream(stream, id_map)
                     ):
@@ -374,11 +389,11 @@ class MistralBaseLLMEntity(Entity):
                             if content.tool_calls:
                                 saw_tool_call = True
                         # Tool results are also yielded and are automatically added to the chat log
-
+                
                     # If tool calls were requested in this streaming turn, ensure next iteration asks for a final response
                     if saw_tool_call:
                         force_final = True
-
+                
                     if assistant_content is None:
                         assistant_content = next(
                             (
@@ -388,7 +403,7 @@ class MistralBaseLLMEntity(Entity):
                             ),
                             None,
                         )
-
+                
                     if assistant_content is None:
                         # If HA only yielded tool results, it may not have produced an AssistantContent yet.
                         # In that case, rebuild messages from chat_log and let the loop continue so the LLM
@@ -397,53 +412,90 @@ class MistralBaseLLMEntity(Entity):
                             raise HomeAssistantError("Final response produced no AssistantContent")
                         messages = _build_messages(chat_log.content, id_map)
                         continue
-
+                
                     # Note: Usage data tracking for streaming mode is not yet implemented
                     # as the Mistral API returns usage in the final chunk which is not
                     # easily accessible through the current async generator pattern
-
+                
                     # If there were tool calls, execute them and continue the loop
-                    return assistant_content
-
-                else:
-                    # Non-streaming mode
-                    resp = await self.client.chat(payload)
-                    # Expect top-level choices; convert any tool calls from Mistral into llm.ToolInput
-                    choices = resp.get("choices", [])
-                    if not choices:
-                        raise HomeAssistantError("No choices returned from Mistral")
-
-                    # Use first choice for simplicity (align with previous behavior)
-                    first = choices[0]
-                    # Convert any tool calls found in the response; pass id_map so Mistral IDs are reversed
-                    tool_calls = _convert_tool_calls(first.get("tool_calls"), id_map)
-                    assistant_content = None
-                    # Build assistant content based on response
-                    if "message" in first:
-                        msg = first["message"]
-                        # Convert to conversation.AssistantContent (simplified)
-                        assistant_content = conversation.AssistantContent(
-                            role="assistant",
-                            content=_message_content_to_text(msg.get("content")),
-                            tool_calls=tool_calls,
-                        )
-                        # Add to chat log (the real code may use more specific APIs)
-                        chat_log.add(assistant_content)
-                    else:
-                        # If no direct message, rebuild messages and continue
+                    # Mirror non-streaming behavior to ensure tool results are added to chat log
+                    if assistant_content and assistant_content.tool_calls:
+                        tool_results = chat_log.async_add_assistant_content(assistant_content)
+                        async for _ in tool_results:
+                            pass
                         messages = _build_messages(chat_log.content, id_map)
-                        continue
-
-                    # If there were tool calls, execute them and continue the loop
-                    if tool_calls:
                         force_final = True
+                        continue
+                
+                    # No tool calls, we're done
+                    return assistant_content
+                else:
+                    # Non-streaming mode (fallback)
+                    response = await self.client.chat(payload)
+                    
+                    if not response or "choices" not in response or not response["choices"]:
+                        raise HomeAssistantError("No response from Mistral API")
+
+                    message = response["choices"][0]["message"]
+                    assistant_tool_calls = _convert_tool_calls(message.get("tool_calls"), id_map)
+                    assistant_content = conversation.AssistantContent(
+                        agent_id=self.entity_id,
+                        content=_message_content_to_text(message.get("content")),
+                        tool_calls=assistant_tool_calls,
+                    )
+                    
+                    # Track token usage for non-streaming
+                    if usage := response.get("usage"):
+                        chat_log.async_trace({
+                            "stats": {
+                                "input_tokens": usage.get("prompt_tokens", 0),
+                                "output_tokens": usage.get("completion_tokens", 0),
+                            }
+                        })
+                    
+                    if assistant_tool_calls:
+                        tool_results = chat_log.async_add_assistant_content(assistant_content)
+                        async for _ in tool_results:
+                            pass
                         messages = _build_messages(chat_log.content, id_map)
+                        force_final = True
                         continue
 
+                    chat_log.async_add_assistant_content_without_tools(assistant_content)
                     return assistant_content
+                    
+            except Exception as err:
+                if isinstance(err, httpx.HTTPStatusError):
+                    status = err.response.status_code
+                
+                    body_text = "<unavailable>"
+                    try:
+                        # For streaming responses, we must read() before accessing text/content
+                        body_text = await err.response.aread()
+                        body_text = body_text.decode(errors="replace")
+                    except Exception:  # noqa: BLE001
+                        try:
+                            body_text = str(err)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    LOGGER.error("Mistral HTTP %s response body: %s", status, body_text)
+                    if status == 429:
+                        LOGGER.error("Rate limited by Mistral API")
+                        raise HomeAssistantError("Rate limited by Mistral API") from err
+                    elif status == 401:
+                        LOGGER.error("Authentication error with Mistral API")
+                        raise HomeAssistantError("Authentication error with Mistral API") from err
+                    elif status in (402, 403):
+                        LOGGER.error("Insufficient quota for Mistral API")
+                        raise HomeAssistantError("Insufficient quota for Mistral API") from err
+                    else:
+                        LOGGER.error("HTTP error talking to Mistral: %s", err)
+                        raise HomeAssistantError("Error talking to Mistral") from err
+                elif isinstance(err, httpx.TimeoutException):
+                    LOGGER.error("Mistral API request timed out")
+                    raise HomeAssistantError("Mistral API request timed out") from err
+                else:
+                    LOGGER.error("Error talking to Mistral: %s", err)
+                    raise HomeAssistantError("Error talking to Mistral") from err
 
-            except httpx.HTTPStatusError as err:
-                # Let caller handle logging/propagation; client already logs bodies on errors
-                raise
-
-        raise HomeAssistantError("Maximum tool iterations exceeded")
+        raise HomeAssistantError("Too many tool iterations without response")
