@@ -270,16 +270,28 @@ async def _transform_stream(
                         )
                         args = {}
 
-                    # Map incoming Mistral id back to original id if available
-                    orig_id = _orig_id_from_mistral_id(buf["id"], id_map)
-
+                    # Try to find an existing internal id mapped to this Mistral id.
+                    # If none exists, create a new internal id (llm.ToolInput) and record the mapping.
+                    mapped_orig = None
+                    for orig, mid in id_map.items():
+                        if mid == buf["id"]:
+                            mapped_orig = orig
+                            break
+                    
+                    if not mapped_orig:
+                        # Create a stable internal id for Home Assistant and map it to the Mistral id.
+                        # We create a ToolInput solely to obtain an internal id (it won't be sent anywhere).
+                        mapped_orig = llm.ToolInput(tool_name=buf["name"], tool_args={}).id
+                        id_map[mapped_orig] = buf["id"]
+                        LOGGER.debug("Created internal tool id %s for Mistral id %s", mapped_orig, buf["id"])
+                    
                     tool_calls.append(
                         llm.ToolInput(
                             tool_name=buf["name"],
                             tool_args=args,
-                            id=orig_id,
+                            id=mapped_orig,
                         )
-                    )
+                    )                    
 
                 tool_call_buffers.clear()
 
