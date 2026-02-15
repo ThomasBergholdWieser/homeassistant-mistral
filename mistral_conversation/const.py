@@ -20,6 +20,21 @@ CONF_REASONING_EFFORT = "reasoning_effort"
 CONF_RECOMMENDED = "recommended"
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
+CONF_DEFAULT_MEDIA_PLAYER = "default_media_player"
+DEFAULT_VOICE_BOX = "media_player.home_assistant_voice_0a06fb"
+CONF_MUSIC_ASSISTANT_CONFIG_ENTRY = "music_assistant_config_entry"
+DEFAULT_MUSIC_ASSISTANT_CONFIG_ENTRY = "01KFTWRQTZV51Q48K5NC3V7GGG"
+
+# Liste der verfügbaren Modelle für das Dropdown
+CHAT_MODELS = [
+    "mistral-large-latest",
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "open-mistral-7b",
+    "open-mixtral-8x7b",
+    "open-mixtral-8x22b",
+    "pixtral-12b-latest",
+]
 
 RECOMMENDED_CHAT_MODEL = "mistral-large-latest"
 RECOMMENDED_MAX_TOKENS = 4096
@@ -27,20 +42,11 @@ RECOMMENDED_REASONING_EFFORT = "medium"
 RECOMMENDED_TEMPERATURE = 0.7
 RECOMMENDED_TOP_P = 0.9
 DEFAULT_SYSTEM_PROMPT = (
-    "You are TARS, a smart home AI assistant inspired by the robot from Interstellar.\n"
-    "Your humor setting is at 75%. You are witty, sarcastic, and occasionally dry — "
-    "but always helpful and reliable when it counts.\n"
-    "You assist the user with their Home Assistant smart home. "
-    "When controlling devices, call the appropriate tools. "
-    "Do not make up device names or services; only use what is available.\n"
-    "If the user asks something unrelated to the smart home, "
-    "answer it normally but keep your characteristic TARS attitude.\n"
-    "Keep your answers brief and to the point — like a good robot should. "
-    "No unnecessary monologues, unless the user asks for it.\n"
-    "When something goes wrong, respond with dry humor instead of boring error messages.\n"
-    "Always respond in the same language as the user."
+    "You are a voice assistant for Home Assistant.\n"
+    "Answer questions about the world truthfully.\n"
+    "Answer in plain text. Keep it simple and to the point."
 )
-MAX_TOOL_ITERATIONS = 10
+MAX_TOOL_ITERATIONS = 5
 
 UNSUPPORTED_MODELS: list[str] = []
 WEB_SEARCH_MODELS: list[str] = []
@@ -49,6 +55,8 @@ RECOMMENDED_CONVERSATION_OPTIONS = {
     CONF_RECOMMENDED: True,
     CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
     CONF_PROMPT: llm.DEFAULT_INSTRUCTIONS_PROMPT,
+    CONF_DEFAULT_MEDIA_PLAYER: DEFAULT_VOICE_BOX, # Neu hinzugefügt
+    CONF_CHAT_MODEL: RECOMMENDED_CHAT_MODEL,
 }
 RECOMMENDED_AI_TASK_OPTIONS = {
     CONF_RECOMMENDED: True,
