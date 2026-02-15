@@ -1,4 +1,3 @@
-# Modified by Louis Rokitta
 """Config flow for the Mistral AI Conversation integration."""
 
 from __future__ import annotations
@@ -6,6 +5,23 @@ from __future__ import annotations
 from typing import Any
 import logging
 import voluptuous as vol
+# Oben bei den Importen in config_flow.py sicherstellen:
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TemplateSelector,
+    EntitySelector,        # Neu
+    EntitySelectorConfig,  # Neu
+)
+from .const import (
+    # ... deine anderen consts
+    CONF_DEFAULT_MEDIA_PLAYER,
+    DEFAULT_VOICE_BOX,
+)
 
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -49,6 +65,10 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     UNSUPPORTED_MODELS,
+# --- DIESE DREI HINZUFÜGEN ---
+    CHAT_MODELS,
+    CONF_DEFAULT_MEDIA_PLAYER,
+    DEFAULT_VOICE_BOX,    
 )
 from .mistral_client import MistralClient
 
@@ -190,6 +210,47 @@ class MistralSubentryFlowHandler(ConfigSubentryFlow):
         step_schema.update(
             {
                 vol.Optional(
+                    CONF_CHAT_MODEL,
+                    description={
+                        "suggested_value": options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+                    },
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=CHAT_MODELS,
+                        mode=SelectSelectorMode.DROPDOWN,
+                        custom_value=True,
+                    )
+                ),
+                vol.Optional(
+                    CONF_PROMPT,
+                    description={
+                        "suggested_value": options.get(
+                            CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT
+                        )
+                    },
+                ): TemplateSelector(),
+                vol.Optional(CONF_LLM_HASS_API): SelectSelector(
+                    SelectSelectorConfig(options=hass_apis, multiple=True)
+                ),
+                # Media Player Auswahl nur für Konversationen anzeigen
+                vol.Optional(
+                    CONF_DEFAULT_MEDIA_PLAYER,
+                    description={
+                        "suggested_value": options.get(CONF_DEFAULT_MEDIA_PLAYER, DEFAULT_VOICE_BOX)
+                    },
+                ): EntitySelector(
+                    EntitySelectorConfig(domain="media_player")
+                ),
+                vol.Required(
+                    CONF_RECOMMENDED,
+                    default=options.get(CONF_RECOMMENDED, True),
+                ): bool,
+            }
+        )
+
+        step_schema.update(
+            {
+                vol.Optional(
                     CONF_PROMPT,
                     description={
                         "suggested_value": options.get(
@@ -246,7 +307,13 @@ class MistralSubentryFlowHandler(ConfigSubentryFlow):
             vol.Optional(
                 CONF_CHAT_MODEL,
                 default=options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
-            ): str,
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=CHAT_MODELS, # Nutzt unsere Liste aus const.py
+                    mode=SelectSelectorMode.DROPDOWN,
+                    custom_value=True, # Erlaubt trotzdem eigene Eingaben, falls Mistral ein neues Modell bringt
+                )
+            ),
             vol.Optional(
                 CONF_MAX_TOKENS,
                 default=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),

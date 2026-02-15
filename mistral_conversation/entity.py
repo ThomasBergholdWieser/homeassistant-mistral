@@ -1,13 +1,13 @@
-# Modified by Louis Rokitta
 """Base entity helpers for the Mistral integration."""
 
 from __future__ import annotations
 
 import json
-from json import JSONDecodeError
-from typing import Any, AsyncIterator, Callable, Iterable, Literal, Dict
+import secrets
+import string
+import re
+from typing import Any, AsyncIterator, Callable, Iterable, Dict
 
-import httpx
 from voluptuous_openapi import convert
 
 from homeassistant.components import conversation
@@ -19,72 +19,33 @@ from homeassistant.helpers.entity import Entity
 
 from .const import (
     CONF_CHAT_MODEL,
-    CONF_MAX_TOKENS,
-    CONF_PROMPT,
-    CONF_REASONING_EFFORT,
-    CONF_TEMPERATURE,
-    CONF_TOP_P,
     DEFAULT_NAME,
     LOGGER,
     MAX_TOOL_ITERATIONS,
     RECOMMENDED_CHAT_MODEL,
-    RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
-    RECOMMENDED_TEMPERATURE,
-    RECOMMENDED_TOP_P,
+    CONF_DEFAULT_MEDIA_PLAYER,
+    DEFAULT_VOICE_BOX,
+    CONF_MUSIC_ASSISTANT_CONFIG_ENTRY,  
+    DEFAULT_MUSIC_ASSISTANT_CONFIG_ENTRY, 
 )
 from .mistral_client import MistralClient
 
-# --- Minimal additions: ID normalization helpers for Mistral tool-call IDs ---
-# These implement a per-request in-memory mapping between internal/original
-# tool-call IDs and Mistral-safe 9-char alphanumeric IDs. Only the ID paths
-# are changed; all existing error handling and control flow is preserved.
-
-import secrets
-import string
-import re
-
-# Mistral ID validation regex (must be 9 alphanumeric characters)
 _MISTRAL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
-
 
 def _gen_mistral_id() -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(9))
 
-
 def _normalize_outgoing_tool_id(orig_id: str | None, id_map: Dict[str, str]) -> str:
-    """Return a Mistral-safe 9-char id for outgoing payloads and store mapping orig->mistral."""
-    if orig_id is None:
-        orig_id = ""
-    # If already valid for Mistral, keep unchanged
-    if _MISTRAL_ID_RE.match(orig_id):
-        return orig_id
-    # Reuse previously generated mapping for this request if present
-    if orig_id in id_map:
-        return id_map[orig_id]
-    # Generate a unique Mistral id and avoid collisions
+    if orig_id is None: orig_id = ""
+    if _MISTRAL_ID_RE.match(orig_id): return orig_id
+    if orig_id in id_map: return id_map[orig_id]
     new_id = _gen_mistral_id()
-    while new_id in id_map.values():
-        new_id = _gen_mistral_id()
+    while new_id in id_map.values(): new_id = _gen_mistral_id()
     id_map[orig_id] = new_id
-    LOGGER.debug("Normalized tool id %s -> %s", orig_id, new_id)
     return new_id
 
-
-def _orig_id_from_mistral_id(mistral_id: str | None, id_map: Dict[str, str]) -> str:
-    """Translate a Mistral id back to the original id using id_map (reverse lookup)."""
-    if not mistral_id:
-        return mistral_id or ""
-    for orig, mid in id_map.items():
-        if mid == mistral_id:
-            return orig
-    # Not found in map: maybe original was already Mistral-safe and passed through
-    return mistral_id
-
-
 def _format_tool(tool: llm.Tool, serializer: Callable[[Any], Any] | None) -> dict:
-    """Convert a Home Assistant tool definition to Mistral schema."""
     return {
         "type": "function",
         "function": {
@@ -97,214 +58,64 @@ def _format_tool(tool: llm.Tool, serializer: Callable[[Any], Any] | None) -> dic
         },
     }
 
-
-def _message_content_to_text(content: str | list[dict] | None) -> str | None:
-    """Flatten the response content into a printable string."""
-    if content is None:
-        return None
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for item in content:
-        if isinstance(item, str):
-            parts.append(item)
-            continue
-        if isinstance(item, dict):
-            if (text := item.get("text")) is not None:
-                parts.append(text)
-            elif (raw := item.get("content")) is not None:
-                parts.append(raw)
-    return "\n".join(parts) if parts else None
-
-
-def _convert_tool_calls(
-    tool_calls: list[dict] | None, id_map: Dict[str, str] | None = None
-) -> list[llm.ToolInput] | None:
-    """Convert tool calls in a Mistral response to llm.ToolInput objects.
-
-    If id_map is provided, translate incoming Mistral ids back to original ids when possible.
-    """
-    if not tool_calls:
-        return None
-
-    result: list[llm.ToolInput] = []
-    for call in tool_calls:
-        name = ""
-        args: dict[str, Any] = {}
-        call_id = call.get("id")
-        if function := call.get("function"):
-            name = function.get("name", "")
-            arguments = function.get("arguments", "{}")
-            try:
-                args = json.loads(arguments)
-            except (ValueError, JSONDecodeError):
-                LOGGER.warning("Failed to parse tool args '%s'", arguments)
-                args = {}
-        # If we have a mapping, attempt to restore the original id
-        if id_map and call_id:
-            call_id = _orig_id_from_mistral_id(call_id, id_map)
-        if not call_id:
-            call_id = llm.ToolInput(tool_name=name, tool_args={}).id
-        result.append(llm.ToolInput(tool_name=name, tool_args=args, id=call_id))
-    return result
-
-
-def _convert_chat_content(content: conversation.Content, id_map: Dict[str, str] | None = None) -> list[dict]:
-    """Serialize chat log entries into the payload Mistral expects.
-
-    If id_map is provided, normalize outgoing tool IDs to 9-char alnum and record mapping.
-    If id_map is None, behavior falls back to original (no normalization).
-    """
-    id_map = id_map or {}
-
+def _convert_chat_content(content: conversation.Content, id_map: Dict[str, str]) -> list[dict]:
     if isinstance(content, conversation.ToolResultContent):
-        return [
-            {
-                "role": "tool",
-                "tool_call_id": _normalize_outgoing_tool_id(content.tool_call_id, id_map),
-                "name": content.tool_name,
-                "content": json.dumps(
-                    content.tool_result, default=lambda obj: repr(obj)
-                ),
-            }
-        ]
-
+        return [{
+            "role": "tool",
+            "tool_call_id": _normalize_outgoing_tool_id(content.tool_call_id, id_map),
+            "name": content.tool_name,
+            "content": json.dumps(content.tool_result),
+        }]
     if isinstance(content, conversation.AssistantContent):
-        message: dict[str, Any] = {"role": "assistant"}
-        if content.content:
-            message["content"] = content.content
+        msg: dict[str, Any] = {"role": "assistant"}
+        if content.content: msg["content"] = content.content
         if content.tool_calls:
-            message["tool_calls"] = [
-                {
-                    "id": _normalize_outgoing_tool_id(tool_call.id, id_map),
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.tool_name,
-                        "arguments": json.dumps(tool_call.tool_args),
-                    },
-                }
-                for tool_call in content.tool_calls
-            ]
-        return [message]
+            msg["tool_calls"] = [{
+                "id": _normalize_outgoing_tool_id(tc.id, id_map),
+                "type": "function",
+                "function": {"name": tc.tool_name, "arguments": json.dumps(tc.tool_args)},
+            } for tc in content.tool_calls]
+        return [msg]
+    return [{"role": content.role, "content": content.content}] if content.content else []
 
-    if content.content:
-        return [{"role": content.role, "content": content.content}]
-    return []
-
-
-def _build_messages(chat_content: Iterable[conversation.Content], id_map: Dict[str, str] | None = None) -> list[dict]:
-    """Serialize the entire chat log."""
-    id_map = id_map or {}
+def _build_messages(chat_content: Iterable[conversation.Content], id_map: Dict[str, str]) -> list[dict]:
     messages: list[dict] = []
     for content in chat_content:
         messages.extend(_convert_chat_content(content, id_map))
     return messages
 
-
 async def _transform_stream(
     stream: AsyncIterator[dict[str, Any]],
     id_map: Dict[str, str],
-) -> AsyncIterator[
-    conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict
-]:
-    """Transform Mistral SSE stream into Home Assistant content deltas.
-
-    We must emit:
-    - AssistantContentDeltaDict(content=...) for text deltas
-    - AssistantContentDeltaDict(tool_calls=[...]) when the model requests tools
-
-    Tool *results* are produced by Home Assistant after executing tools and should
-    not be emitted here.
-    """
+) -> AsyncIterator[conversation.AssistantContentDeltaDict]:
     tool_call_buffers: dict[int, dict[str, Any]] = {}
-
     async for chunk in stream:
-        choices = chunk.get("choices", [])
-        if not choices:
-            continue
-
-        for choice in choices:
+        for choice in chunk.get("choices", []):
             delta = choice.get("delta") or {}
-            finish_reason = choice.get("finish_reason")
-
-            # Text delta
             if "content" in delta and delta["content"]:
-                yield conversation.AssistantContentDeltaDict(
-                    content=delta["content"],
-                )
-
-            # Tool-call delta accumulation
-            if "tool_calls" in delta and delta["tool_calls"]:
-                for tool_call in delta["tool_calls"]:
-                    index = tool_call.get("index", 0)
-
-                    buf = tool_call_buffers.setdefault(
-                        index, {"id": "", "name": "", "arguments": ""}
-                    )
-
-                    if tool_call.get("id"):
-                        buf["id"] = tool_call["id"]
-
-                    fn = tool_call.get("function") or {}
-                    if fn.get("name"):
-                        buf["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        # Mistral streams arguments as partial JSON strings; append
-                        buf["arguments"] += fn["arguments"]
-
-            # When the model indicates tool calls are complete, emit them
-            if finish_reason == "tool_calls" and tool_call_buffers:
-                tool_calls: list[llm.ToolInput] = []
-
-                # Emit tool calls ordered by index for stability
+                yield conversation.AssistantContentDeltaDict(content=delta["content"])
+            if "tool_calls" in delta:
+                for tc in delta["tool_calls"]:
+                    idx = tc.get("index", 0)
+                    buf = tool_call_buffers.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if tc.get("id"): buf["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"): buf["name"] = fn["name"]
+                    if fn.get("arguments"): buf["arguments"] += fn["arguments"]
+            if choice.get("finish_reason") == "tool_calls":
+                inputs = []
                 for idx in sorted(tool_call_buffers):
                     buf = tool_call_buffers[idx]
-                    if not (buf["id"] and buf["name"]):
-                        continue
-
-                    try:
-                        args = json.loads(buf["arguments"]) if buf["arguments"] else {}
-                    except (ValueError, JSONDecodeError):
-                        LOGGER.warning(
-                            "Failed to parse streamed tool args '%s'", buf["arguments"]
-                        )
-                        args = {}
-
-                    # Try to find an existing internal id mapped to this Mistral id.
-                    # If none exists, create a new internal id (llm.ToolInput) and record the mapping.
-                    mapped_orig = None
-                    for orig, mid in id_map.items():
-                        if mid == buf["id"]:
-                            mapped_orig = orig
-                            break
-                    
-                    if not mapped_orig:
-                        # Create a stable internal id for Home Assistant and map it to the Mistral id.
-                        # We create a ToolInput solely to obtain an internal id (it won't be sent anywhere).
-                        mapped_orig = llm.ToolInput(tool_name=buf["name"], tool_args={}).id
-                        id_map[mapped_orig] = buf["id"]
-                        LOGGER.debug("Created internal tool id %s for Mistral id %s", mapped_orig, buf["id"])
-                    
-                    tool_calls.append(
-                        llm.ToolInput(
-                            tool_name=buf["name"],
-                            tool_args=args,
-                            id=mapped_orig,
-                        )
-                    )                    
-
+                    try: args = json.loads(buf["arguments"])
+                    except: args = {}
+                    int_id = next((k for k, v in id_map.items() if v == buf["id"]), secrets.token_hex(8))
+                    id_map[int_id] = buf["id"]
+                    inputs.append(llm.ToolInput(tool_name=buf["name"], tool_args=args, id=int_id))
                 tool_call_buffers.clear()
-
-                if tool_calls:
-                    yield conversation.AssistantContentDeltaDict(
-                        tool_calls=tool_calls,
-                    )
+                yield conversation.AssistantContentDeltaDict(tool_calls=inputs)
 
 class MistralBaseLLMEntity(Entity):
-    """Common functionality for Mistral entities."""
-
     _attr_has_entity_name = True
-    _attr_name = None
 
     def __init__(self, entry: ConfigEntry, subentry: ConfigSubentry) -> None:
         self.entry = entry
@@ -318,13 +129,28 @@ class MistralBaseLLMEntity(Entity):
             entry_type=dr.DeviceEntryType.SERVICE,
         )
 
+    def _get_music_assistant_config_entry_id(self, hass: HomeAssistant) -> str | None:
+        """Get the config_entry_id for Music Assistant integration."""
+        # Einfach direkt nutzen - kein extra import nötig!
+        return self._options().get(
+            CONF_MUSIC_ASSISTANT_CONFIG_ENTRY, 
+            DEFAULT_MUSIC_ASSISTANT_CONFIG_ENTRY
+        )
+
     @property
     def client(self) -> MistralClient:
-        """Return the cached API client."""
         return self.entry.runtime_data
 
-    def _options(self) -> dict[str, Any]:
+    def _options(self):
         return self.subentry.data or {}
+
+    async def _add_assistant_content(self, chat_log: conversation.ChatLog, content: conversation.AssistantContent):
+        """Add assistant content to chat log."""
+        chat_log.content.append(content)
+    
+    async def _add_tool_content(self, chat_log: conversation.ChatLog, content: conversation.ToolResultContent):
+        """Add tool result content to chat log."""
+        chat_log.content.append(content)
 
     async def _async_handle_chat_log(
         self,
@@ -333,181 +159,276 @@ class MistralBaseLLMEntity(Entity):
         structure_prompt: str | None = None,
         use_streaming: bool = True,
     ) -> conversation.AssistantContent:
-        """Generate a new turn for the chat log."""
+        """Handle chat log and process tool calls."""
         options = self._options()
-        tools: list[dict] = []
-        
-        if chat_log.llm_api and chat_log.llm_api.tools:
-            tools = [
-                _format_tool(tool, chat_log.llm_api.custom_serializer)
-                for tool in chat_log.llm_api.tools
-            ]
-
-        # Create a per-request id_map and pass it into message-building and stream transform
         id_map: Dict[str, str] = {}
-        messages = _build_messages(chat_log.content, id_map)
-        if structure_prompt:
-            messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": structure_prompt,
-                },
-            )
         
-        force_final = False
-
-        for _ in range(MAX_TOOL_ITERATIONS):
-            model_name = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        VOICE_BOX = options.get(CONF_DEFAULT_MEDIA_PLAYER, DEFAULT_VOICE_BOX)
+        CURRENT_MODEL = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+    
+        state = hass.states.get(VOICE_BOX)
+        friendly_name = state.name if state else "dem Standard-Lautsprecher"
+    
+        instruction = (
+            f" Deine Standard-Ausgabe für Musik ist {friendly_name} ({VOICE_BOX}). "
+            " Nutze für Musik-Befehle immer diesen Player."
+        )
+    
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            messages = _build_messages(chat_log.content, id_map)
+            full_system_prompt = (structure_prompt + instruction) if structure_prompt else instruction
+            messages.insert(0, {"role": "system", "content": full_system_prompt})
+    
+            # Build tools list
+            tools = []
+            if chat_log.llm_api and chat_log.llm_api.tools:
+                tools = [_format_tool(t, chat_log.llm_api.custom_serializer) for t in chat_log.llm_api.tools]
+            
+            # Add Music Assistant tools (only if not already present)
+            music_tool_names = {"music_assistant.search", "music_assistant.play_media"}
+            existing_tool_names = {t.name for t in (chat_log.llm_api.tools if chat_log.llm_api else [])}
+            
+            if not music_tool_names.intersection(existing_tool_names):
+                tools.extend([
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "music_assistant.search",
+                            "description": "Suche nach Musik.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "description": "Suchbegriff"},
+                                    "limit": {"type": "integer", "default": 1}
+                                },
+                                "required": ["name"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "music_assistant.play_media",
+                            "description": "Spielt Musik ab.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "entity_id": {"type": "string", "description": "Player ID"},
+                                    "media_id": {"type": "string", "description": "Media ID"},
+                                    "media_type": {"type": "string", "description": "track/album"}
+                                },
+                                "required": ["media_id", "media_type"]
+                            }
+                        }
+                    }
+                ])
+    
+            # Prepare API payload
             payload = {
-                "model": model_name,
+                "model": CURRENT_MODEL,
                 "messages": messages,
-                "max_tokens": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
-                "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
-                "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
+                "tools": tools,
                 "stream": use_streaming,
             }
-            # Only add reasoning_effort for magistral models
-            if model_name.startswith("magistral"):
-                payload["reasoning_effort"] = options.get(
-                    CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
+    
+            # Get response from Mistral
+            assistant_content = None
+            if use_streaming:
+                stream = self.client.chat_stream(payload)
+                content_text = ""
+                tool_calls = []
+                async for delta in _transform_stream(stream, id_map):
+                    if delta.get("content"): 
+                        content_text += delta["content"]
+                    if delta.get("tool_calls"): 
+                        tool_calls.extend(delta["tool_calls"])
+                
+                assistant_content = conversation.AssistantContent(
+                    content=content_text, 
+                    tool_calls=tool_calls, 
+                    agent_id=self.unique_id
                 )
-            if tools and not force_final:
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
             else:
-                # Ensure we never send tool_choice without tools (Mistral 400)
-                payload.pop("tool_choice", None)
-                payload.pop("tools", None)
-                
-            try:
-                if use_streaming:
-                    # Streaming mode
-                    stream = self.client.chat_stream(payload)
-                
-                    # async_add_delta_content_stream returns an async generator that yields content as it processes
-                    # It automatically adds content to the chat log and executes tool calls
-                    # We iterate through it to collect all yielded content
-                    assistant_content = None
-                    saw_tool_call = False
-                    yielded_items = []  # Track yielded types for error diagnostics
-                
-                    async for content in chat_log.async_add_delta_content_stream(
-                        self.entity_id, _transform_stream(stream, id_map)
-                    ):
-                        yielded_items.append(type(content).__name__)
-                        if isinstance(content, conversation.AssistantContent):
-                            assistant_content = content
-                            if content.tool_calls:
-                                saw_tool_call = True
-                        # Tool results are also yielded and are automatically added to the chat log
-                
-                    # If tool calls were requested in this streaming turn, ensure next iteration asks for a final response
-                    if saw_tool_call:
-                        force_final = True
-                
-                    if assistant_content is None:
-                        assistant_content = next(
-                            (
-                                content
-                                for content in reversed(chat_log.content)
-                                if isinstance(content, conversation.AssistantContent)
-                            ),
-                            None,
-                        )
-                
-                    if assistant_content is None:
-                        # If HA only yielded tool results, it may not have produced an AssistantContent yet.
-                        # In that case, rebuild messages from chat_log and let the loop continue so the LLM
-                        # can produce the final assistant response after tools executed.
-                        if force_final:
-                            raise HomeAssistantError("Final response produced no AssistantContent")
-                        messages = _build_messages(chat_log.content, id_map)
-                        continue
-                
-                    # Note: Usage data tracking for streaming mode is not yet implemented
-                    # as the Mistral API returns usage in the final chunk which is not
-                    # easily accessible through the current async generator pattern
-                
-                    # If there were tool calls, execute them and continue the loop
-                    # Mirror non-streaming behavior to ensure tool results are added to chat log
-                    if assistant_content and assistant_content.tool_calls:
-                        tool_results = chat_log.async_add_assistant_content(assistant_content)
-                        async for _ in tool_results:
-                            pass
-                        messages = _build_messages(chat_log.content, id_map)
-                        force_final = True
-                        continue
-                
-                    # No tool calls, we're done
-                    return assistant_content
+                response = await self.client.chat(payload)
+                msg = response.get("choices", [{}])[0].get("message", {})
+                tcs = []
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        try: 
+                            args = json.loads(tc["function"]["arguments"])
+                        except (json.JSONDecodeError, KeyError, TypeError) as e:
+                            LOGGER.warning(f"Failed to parse tool arguments: {e}")
+                            args = {}
+                        tcs.append(llm.ToolInput(
+                            tool_name=tc["function"]["name"], 
+                            tool_args=args, 
+                            id=tc["id"]
+                        ))
+                assistant_content = conversation.AssistantContent(
+                    content=msg.get("content"), 
+                    tool_calls=tcs, 
+                    agent_id=self.unique_id
+                )
+    
+            if not assistant_content: 
+                break
+    
+            # No tool calls → Return response directly
+            if not assistant_content.tool_calls:
+                await self._add_assistant_content(chat_log, assistant_content)
+                return assistant_content
+    
+            # ============================================================
+            # Separate Music Assistant tools from standard tools
+            # ============================================================
+            
+            music_tools = []
+            standard_tools = []
+            
+            for tool in assistant_content.tool_calls:
+                if tool.tool_name.startswith("music_assistant"):
+                    music_tools.append(tool)
                 else:
-                    # Non-streaming mode (fallback)
-                    response = await self.client.chat(payload)
-                    
-                    if not response or "choices" not in response or not response["choices"]:
-                        raise HomeAssistantError("No response from Mistral API")
-
-                    message = response["choices"][0]["message"]
-                    assistant_tool_calls = _convert_tool_calls(message.get("tool_calls"), id_map)
-                    assistant_content = conversation.AssistantContent(
-                        agent_id=self.entity_id,
-                        content=_message_content_to_text(message.get("content")),
-                        tool_calls=assistant_tool_calls,
-                    )
-                    
-                    # Track token usage for non-streaming
-                    if usage := response.get("usage"):
-                        chat_log.async_trace({
-                            "stats": {
-                                "input_tokens": usage.get("prompt_tokens", 0),
-                                "output_tokens": usage.get("completion_tokens", 0),
-                            }
-                        })
-                    
-                    if assistant_tool_calls:
-                        tool_results = chat_log.async_add_assistant_content(assistant_content)
-                        async for _ in tool_results:
-                            pass
-                        messages = _build_messages(chat_log.content, id_map)
-                        force_final = True
-                        continue
-
-                    chat_log.async_add_assistant_content_without_tools(assistant_content)
-                    return assistant_content
-                    
-            except Exception as err:
-                if isinstance(err, httpx.HTTPStatusError):
-                    status = err.response.status_code
+                    standard_tools.append(tool)
+            
+            # ============================================================
+            # Process Music Assistant tools
+            # ============================================================
+            
+            if music_tools:
+                # Add assistant content with ONLY music tools
+                await self._add_assistant_content(chat_log, conversation.AssistantContent(
+                    content=assistant_content.content,
+                    tool_calls=music_tools,
+                    agent_id=self.unique_id
+                ))
                 
-                    body_text = "<unavailable>"
+                # Get Music Assistant config_entry_id
+                ma_config_entry_id = self._get_music_assistant_config_entry_id(hass)
+                
+                # Execute each music tool individually
+                for tool in music_tools:
                     try:
-                        # For streaming responses, we must read() before accessing text/content
-                        body_text = await err.response.aread()
-                        body_text = body_text.decode(errors="replace")
-                    except Exception:  # noqa: BLE001
-                        try:
-                            body_text = str(err)
-                        except Exception:  # noqa: BLE001
-                            pass
-                    LOGGER.error("Mistral HTTP %s response body: %s", status, body_text)
-                    if status == 429:
-                        LOGGER.error("Rate limited by Mistral API")
-                        raise HomeAssistantError("Rate limited by Mistral API") from err
-                    elif status == 401:
-                        LOGGER.error("Authentication error with Mistral API")
-                        raise HomeAssistantError("Authentication error with Mistral API") from err
-                    elif status in (402, 403):
-                        LOGGER.error("Insufficient quota for Mistral API")
-                        raise HomeAssistantError("Insufficient quota for Mistral API") from err
-                    else:
-                        LOGGER.error("HTTP error talking to Mistral: %s", err)
-                        raise HomeAssistantError("Error talking to Mistral") from err
-                elif isinstance(err, httpx.TimeoutException):
-                    LOGGER.error("Mistral API request timed out")
-                    raise HomeAssistantError("Mistral API request timed out") from err
-                else:
-                    LOGGER.error("Error talking to Mistral: %s", err)
-                    raise HomeAssistantError("Error talking to Mistral") from err
+                        service = tool.tool_name.split(".")[1]
+                        args = dict(tool.tool_args)
+                        eid = args.pop("entity_id", VOICE_BOX)
+                        
+                        # Add config_entry_id ONLY if we have it and service needs it
+                        if ma_config_entry_id and service in ["search", "get_library"]:
+                            args["config_entry_id"] = ma_config_entry_id
+                        
+                        # Filter arguments based on service
+                        if service == "play_media":
+                            args = {k: v for k, v in args.items() if k in ["media_id", "media_type"]}
+                        elif service == "search":
+                            allowed = ["name", "limit", "media_type", "artist"]
+                            if ma_config_entry_id:
+                                allowed.append("config_entry_id")
+                            args = {k: v for k, v in args.items() if k in allowed}
+                        elif service == "get_library":
+                            allowed = ["media_type", "limit", "offset", "order_by"]
+                            if ma_config_entry_id:
+                                allowed.append("config_entry_id")
+                            args = {k: v for k, v in args.items() if k in allowed}
+                        
+                        # Call the service - play_media doesn't return response!
+                        if service == "play_media":
+                            await hass.services.async_call(
+                                "music_assistant", 
+                                service, 
+                                args,
+                                target={"entity_id": eid},
+                                blocking=True
+                            )
+                            res = {"status": "success", "message": "Playback started"}
+                        else:
+                            res = await hass.services.async_call(
+                                "music_assistant", 
+                                service, 
+                                args,
+                                blocking=True, 
+                                return_response=True
+                            )
 
-        raise HomeAssistantError("Too many tool iterations without response")
+                        # Add tool result to chat log
+                        await self._add_tool_content(chat_log, conversation.ToolResultContent(
+                            tool_call_id=tool.id, 
+                            tool_name=tool.tool_name, 
+                            tool_result=res or {"status": "success"},
+                            agent_id=self.unique_id
+                        ))
+                        
+                    except Exception as e:
+                        LOGGER.error(f"Music Assistant tool '{tool.tool_name}' failed: {e}")
+                        await self._add_tool_content(chat_log, conversation.ToolResultContent(
+                            tool_call_id=tool.id, 
+                            tool_name=tool.tool_name, 
+                            tool_result={"error": str(e)},
+                            agent_id=self.unique_id
+                        ))
+            
+            # ============================================================
+            # Process standard Home Assistant tools
+            # ============================================================
+            
+            if standard_tools:
+                # Add assistant content with standard tools
+                await self._add_assistant_content(chat_log, conversation.AssistantContent(
+                    content=assistant_content.content if not music_tools else "",
+                    tool_calls=standard_tools,
+                    agent_id=self.unique_id
+                ))
+                
+                # Execute standard tools via llm_api
+                if chat_log.llm_api and hasattr(chat_log.llm_api, 'async_call_tool'):
+                    for tool in standard_tools:
+                        try:
+                            result = await chat_log.llm_api.async_call_tool(tool)
+                            await self._add_tool_content(chat_log, conversation.ToolResultContent(
+                                tool_call_id=tool.id,
+                                tool_name=tool.tool_name,
+                                tool_result=result,
+                                agent_id=self.unique_id
+                            ))
+                        except Exception as e:
+                            LOGGER.error(f"Standard tool '{tool.tool_name}' failed: {e}")
+                            await self._add_tool_content(chat_log, conversation.ToolResultContent(
+                                tool_call_id=tool.id,
+                                tool_name=tool.tool_name,
+                                tool_result={"error": str(e)},
+                                agent_id=self.unique_id
+                            ))
+                    
+                    # Nach Ausführung: continue für nächste Iteration
+                    continue
+                else:
+                    # Kein llm_api? Dann return
+                    return assistant_content
+            
+            # ============================================================
+            # Continue loop if we processed music tools
+            # ============================================================
+            
+            if music_tools:
+                continue
+            
+            # No tools were processed
+            await self._add_assistant_content(chat_log, assistant_content)
+            return assistant_content
+    
+        # ============================================================
+        # Max iterations reached - return gracefully
+        # ============================================================
+        
+        LOGGER.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached")
+        
+        # Return last assistant content if available
+        if assistant_content:
+            return assistant_content
+        
+        # Fallback: Return error message
+        return conversation.AssistantContent(
+            content="Entschuldigung, ich konnte die Anfrage nicht vollständig verarbeiten.",
+            tool_calls=[],
+            agent_id=self.unique_id
+        )
