@@ -21,9 +21,9 @@ CONF_RECOMMENDED = "recommended"
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 CONF_DEFAULT_MEDIA_PLAYER = "default_media_player"
-DEFAULT_VOICE_BOX = "media_player.home_assistant_voice_0a06fb"
+DEFAULT_VOICE_BOX = None
 CONF_MUSIC_ASSISTANT_CONFIG_ENTRY = "music_assistant_config_entry"
-DEFAULT_MUSIC_ASSISTANT_CONFIG_ENTRY = "01KFTWRQTZV51Q48K5NC3V7GGG"
+DEFAULT_MUSIC_ASSISTANT_CONFIG_ENTRY = None
 
 # Liste der verfügbaren Modelle für das Dropdown
 CHAT_MODELS = [
