@@ -6,6 +6,7 @@ import json
 import secrets
 import string
 import re
+from datetime import datetime, date, time
 from typing import Any, AsyncIterator, Callable, Iterable, Dict
 
 from voluptuous_openapi import convert
@@ -31,6 +32,14 @@ from .const import (
 from .mistral_client import MistralClient
 
 _MISTRAL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
+
+def _json_default(obj: Any) -> Any:
+    """JSON serializer fallback for types not natively supported."""
+    if isinstance(obj, (datetime, date, time)):
+        return obj.isoformat()
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    return str(obj)
 
 def _gen_mistral_id() -> str:
     alphabet = string.ascii_letters + string.digits
@@ -64,7 +73,7 @@ def _convert_chat_content(content: conversation.Content, id_map: Dict[str, str])
             "role": "tool",
             "tool_call_id": _normalize_outgoing_tool_id(content.tool_call_id, id_map),
             "name": content.tool_name,
-            "content": json.dumps(content.tool_result),
+            "content": json.dumps(content.tool_result, default=_json_default, ensure_ascii=False),
         }]
     if isinstance(content, conversation.AssistantContent):
         msg: dict[str, Any] = {"role": "assistant"}
@@ -73,7 +82,7 @@ def _convert_chat_content(content: conversation.Content, id_map: Dict[str, str])
             msg["tool_calls"] = [{
                 "id": _normalize_outgoing_tool_id(tc.id, id_map),
                 "type": "function",
-                "function": {"name": tc.tool_name, "arguments": json.dumps(tc.tool_args)},
+                "function": {"name": tc.tool_name, "arguments": json.dumps(tc.tool_args, default=_json_default, ensure_ascii=False)},
             } for tc in content.tool_calls]
         return [msg]
     return [{"role": content.role, "content": content.content}] if content.content else []
@@ -320,6 +329,8 @@ class MistralBaseLLMEntity(Entity):
                         # Filter arguments based on service
                         if service == "play_media":
                             args = {k: v for k, v in args.items() if k in ["media_id", "media_type"]}
+                            if "media_id" in args:
+                                args["media_id"] = str(args["media_id"])
                         elif service == "search":
                             allowed = ["name", "limit", "media_type", "artist"]
                             if ma_config_entry_id:
@@ -388,6 +399,16 @@ class MistralBaseLLMEntity(Entity):
                                 tool_call_id=tool.id,
                                 tool_name=tool.tool_name,
                                 tool_result=result,
+                                agent_id=self.unique_id
+                            ))
+                        except AssertionError as e:
+                            LOGGER.error(
+                                f"Standard tool '{tool.tool_name}' raised AssertionError: {e}"
+                            )
+                            await self._add_tool_content(chat_log, conversation.ToolResultContent(
+                                tool_call_id=tool.id,
+                                tool_name=tool.tool_name,
+                                tool_result={"error": str(e)},
                                 agent_id=self.unique_id
                             ))
                         except Exception as e:
